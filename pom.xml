@@ -113,6 +113,23 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!--
+				Surefire (fase test) roda *Tests: dominio puro e fatia web mockada, sem Docker.
+				Failsafe (fase verify) roda *IT: tudo que sobe Testcontainers.
+				`mvn test` da feedback em segundos; `mvn verify` roda os dois.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<executions>
+					<execution>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
 		</plugins>
 	</build>
 
