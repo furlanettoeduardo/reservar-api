@@ -189,6 +189,41 @@ Retry automático no serviço para o caso retentável é candidato registrado e 
 ele mascararia a medição da janela de corrida, que é a razão entre os contadores de
 `detectadoPor`.
 
+## Armadilhas de `@Transactional`, verificadas em teste
+
+`TransacaoIT` executa as duas patologias clássicas contra Postgres real. Cada uma tem um par
+de controle que difere numa variável só, então o teste mostra a diferença em vez de afirmá-la.
+
+**Autoinvocação.** `@Transactional` funciona por proxy: chamada que não sai do objeto não passa
+pelo interceptor.
+
+| Chamada | Transação ativa | Nome da transação |
+|---|---|---|
+| de fora (pelo proxy) | `true` | `...anotado` |
+| `this.anotado()` | `false` | `null` |
+| `this.observaEmTransacaoNova()` com `REQUIRES_NEW` | `true` | `...pedeTransacaoNovaViaThis` — a de **fora** |
+| a mesma, pelo proxy | `true` | `...observaEmTransacaoNova` |
+
+A consequência que custa dado: auditoria gravada em `REQUIRES_NEW` para sobreviver ao rollback
+**some junto** quando chamada via `this`, porque nunca esteve numa transação separada. Mesmo
+código, mesma anotação — só muda por onde a chamada passou.
+
+**Rollback e checked exception.** O padrão do Spring só desfaz em `RuntimeException` e `Error`.
+
+| Cenário | Linha gravada sobrevive? |
+|---|---|
+| `@Transactional` + checked propagada | **sim** — commitou apesar da falha |
+| `@Transactional` + `RuntimeException` | não |
+| `@Transactional(rollbackFor = ...)` + checked | não — a correção |
+| checked capturada dentro do método | sim — e aqui está **correto** |
+
+O último caso está no teste de propósito: sem ele, a leitura fácil é "checked exception é
+perigosa", e alguém sai espalhando `rollbackFor` onde não há problema. O problema só existe
+quando a exceção atravessa a fronteira transacional depois de algo já ter sido gravado.
+
+Os métodos deliberadamente quebrados vivem em `PatologiasTransacionais`, em código de teste —
+produção não carrega isso.
+
 ## Decisões de arquitetura
 
 - [ADR 0001 — Relacionamento unidirecional](docs/adr/0001-relacionamento-unidirecional.md)
