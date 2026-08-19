@@ -8,12 +8,11 @@ import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
 import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
 import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
 import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.service.NovaReserva;
 import io.github.furlanettoeduardo.reservas.service.ReservaResponse;
 import io.github.furlanettoeduardo.reservas.service.ReservaService;
 import jakarta.persistence.EntityManagerFactory;
 import org.hibernate.LazyInitializationException;
-import org.hibernate.SessionFactory;
-import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 @TestPropertySource(properties = "spring.jpa.properties.hibernate.generate_statistics=true")
-class ListagemNMaisUmIT {
+class ContagemDeQueriesIT {
 
     private static final int QUANTIDADE_DE_RESERVAS = 50;
 
@@ -59,10 +58,8 @@ class ListagemNMaisUmIT {
     private EntityManagerFactory emf;
 
     private Long espacoId;
-
-    private Statistics estatisticas() {
-        return emf.unwrap(SessionFactory.class).getStatistics();
-    }
+    private Long clienteAvulso;
+    private ContadorDeQueries contador;
 
     @BeforeEach
     void semearCinquentaReservasDeClientesDistintos() {
@@ -80,6 +77,9 @@ class ListagemNMaisUmIT {
             Espaco espaco = espacoRepository.save(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
             espacoId = espaco.getId();
 
+            clienteAvulso = clienteRepository.save(
+                    new Cliente("Avulso", "avulso@exemplo.com")).getId();
+
             Instant base = Instant.parse("2026-09-01T08:00:00Z");
             for (int i = 0; i < QUANTIDADE_DE_RESERVAS; i++) {
                 Cliente cliente = clienteRepository.save(
@@ -88,16 +88,16 @@ class ListagemNMaisUmIT {
                 reservaRepository.save(Reserva.nova(espaco, cliente, periodo));
             }
         });
+
+        contador = new ContadorDeQueries(emf);
     }
 
     @Test
     void medeAsQueriesDaListagem() {
-        estatisticas().clear();
+        var medicao = contador.medir(() -> service.listarConfirmadasDoEspaco(espacoId));
+        List<ReservaResponse> resposta = medicao.resultado();
 
-        List<ReservaResponse> resposta = service.listarConfirmadasDoEspaco(espacoId);
-
-        long queries = estatisticas().getPrepareStatementCount();
-        System.out.printf("%n[N+1] %d reservas -> %d queries%n", resposta.size(), queries);
+        System.out.printf("%n[N+1] %d reservas -> %d queries%n", resposta.size(), medicao.queries());
 
         assertThat(resposta).hasSize(QUANTIDADE_DE_RESERVAS);
         assertThat(resposta).allSatisfy(r -> {
@@ -105,10 +105,32 @@ class ListagemNMaisUmIT {
             assertThat(r.clienteNome()).startsWith("Cliente ");
         });
 
-        assertThat(queries)
-                .as("MEDIDO, nao desejado: 1 listagem + 1 espaco (reusado do cache de 1o nivel) "
-                        + "+ 1 por cliente distinto. Corrigir no 1B, nao aqui.")
+        // Igualdade exata, nao isLessThanOrEqualTo. Um teto frouxo passaria calado tanto se o
+        // N+1 piorasse dentro do teto quanto se a correcao chegasse -- e o valor deste teste e
+        // justamente obrigar quem mexer em fetch strategy a encarar o numero e atualiza-lo.
+        assertThat(medicao.queries())
+                .as("BASELINE MEDIDO, nao desejado: 1 listagem + 1 espaco (reusado do cache de "
+                        + "1o nivel nas outras 49) + 1 por cliente distinto. Este numero cai "
+                        + "quando o N+1 for corrigido, e o teste falhar e o sinal de que caiu.")
                 .isEqualTo(QUANTIDADE_DE_RESERVAS + 2);
+    }
+
+    @Test
+    void medeAsQueriesDaCriacao() {
+        // Bem depois das 50 horas consecutivas que o cenario semeia a partir de 01/09 08:00.
+        Instant livre = Instant.parse("2026-09-20T08:00:00Z");
+
+        var medicao = contador.medir(() -> service.criar(
+                new NovaReserva(espacoId, clienteAvulso, livre, livre.plusSeconds(3600))));
+
+        System.out.printf("%n[criar] 1 reserva -> %d queries%n", medicao.queries());
+
+        assertThat(medicao.resultado().id()).isNotNull();
+        assertThat(medicao.queries())
+                .as("baseline do caminho de escrita: espaco + cliente + verificacao + insert. "
+                        + "Fixado antes da V2 para que o custo de um lock pessimista, se ele "
+                        + "entrar, apareca como diferenca e nao como impressao.")
+                .isEqualTo(4);
     }
 
     @Test

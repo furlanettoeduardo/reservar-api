@@ -73,7 +73,7 @@ public class ReservaService {
     /**
      * Mapeia para DTO <b>dentro</b> da transacao -- e o unico lugar onde os proxies LAZY ainda
      * inicializam. TODO(1B): e exatamente por isso que o N+1 nasce aqui. Ver a medicao em
-     * ListagemNMaisUmIT antes de corrigir.
+     * ContagemDeQueriesIT antes de corrigir.
      */
     @Transactional(readOnly = true)
     public List<ReservaResponse> listarConfirmadasDoEspaco(Long espacoId) {

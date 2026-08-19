@@ -125,7 +125,7 @@ A separação é Surefire (`*Tests`) versus Failsafe (`*IT`).
 
 `GET /espacos/{id}/reservas` com **50 reservas** dispara **52 queries**. Medido com
 `hibernate.generate_statistics` e `Statistics.getPrepareStatementCount()`, não estimado —
-ver `ListagemNMaisUmIT`.
+ver `ContagemDeQueriesIT`.
 
 A decomposição importa mais que o número:
 
