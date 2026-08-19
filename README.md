@@ -54,8 +54,16 @@ A aplicação sobe em `http://localhost:8080`. O Flyway aplica as migrations na 
 - Swagger UI — <http://localhost:8080/swagger-ui.html>
 - Health — <http://localhost:8080/actuator/health>
 
-O 1A entrega apenas os endpoints de reserva: espaços e clientes ainda não têm API própria.
-Para ter o que reservar, semeie pelo banco:
+### Limitação: não há API para espaços e clientes
+
+O 1A entrega apenas os endpoints de reserva. Criar espaço e cliente exige SQL direto — não
+existe `POST /espacos` nem `POST /clientes`, e sem eles nenhuma requisição de reserva chega a
+um `201`. É escopo deixado de fora conscientemente, não esquecimento: o objetivo do bloco era
+a regra de sobreposição, não CRUD.
+
+Consequência prática, para quem clonar: o passo abaixo é obrigatório antes do primeiro
+`curl`. Resolver isso de verdade (dados de exemplo por perfil `dev`, de modo que
+`docker compose up` já entregue um sistema navegável) está previsto para o 1C.
 
 ```bash
 docker exec -i reservar-db psql -U reservas -d reservas <<'SQL'
@@ -100,6 +108,10 @@ tipos de conflito são distinguidos pelo campo `type` e pela propriedade `detect
 ```
 
 A separação é Surefire (`*Tests`) versus Failsafe (`*IT`).
+
+> **`./mvnw test` cobre 22 dos 48 testes.** Verde nele não significa verde no repositório —
+> tudo que toca banco roda só no `verify`. Use `test` no loop de desenvolvimento e `verify`
+> antes de abrir PR. O CI roda os dois.
 
 | Camada | Testes | Tempo |
 |---|---|---|
