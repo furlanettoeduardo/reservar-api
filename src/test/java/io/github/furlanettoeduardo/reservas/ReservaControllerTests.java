@@ -10,6 +10,8 @@ import io.github.furlanettoeduardo.reservas.web.ReservaController;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -105,6 +107,33 @@ class ReservaControllerTests {
                 .andExpect(jsonPath("$.type").value("urn:reservar:conflito-de-regra"))
                 .andExpect(jsonPath("$.detectadoPor").value("regra"))
                 .andExpect(jsonPath("$.stackTrace").doesNotExist());
+    }
+
+    @Test
+    void violacaoDeConstraintViraQuatrocentosENoveMarcadoComoConstraint() throws Exception {
+        willThrow(new DataIntegrityViolationException("reserva_sem_sobreposicao"))
+                .given(service).criar(any(NovaReserva.class));
+
+        mockMvc.perform(post("/reservas")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(corpo(1L, 2L, INICIO, FIM)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("urn:reservar:conflito-de-constraint"))
+                .andExpect(jsonPath("$.detectadoPor").value("constraint"));
+    }
+
+    @Test
+    void deadlockViraQuatrocentosENoveRetentavelENaoQuinhentos() throws Exception {
+        willThrow(new CannotAcquireLockException("deadlock detected"))
+                .given(service).criar(any(NovaReserva.class));
+
+        mockMvc.perform(post("/reservas")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(corpo(1L, 2L, INICIO, FIM)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("urn:reservar:conflito-concorrente"))
+                .andExpect(jsonPath("$.detectadoPor").value("deadlock"))
+                .andExpect(jsonPath("$.retentavel").value(true));
     }
 
     @Test

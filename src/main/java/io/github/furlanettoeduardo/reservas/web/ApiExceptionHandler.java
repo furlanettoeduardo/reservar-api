@@ -2,6 +2,7 @@ package io.github.furlanettoeduardo.reservas.web;
 
 import io.github.furlanettoeduardo.reservas.service.ConflitoDeReservaException;
 import io.github.furlanettoeduardo.reservas.service.RecursoNaoEncontradoException;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -21,6 +22,7 @@ public class ApiExceptionHandler {
 
     private static final URI TIPO_CONFLITO_DE_REGRA = URI.create("urn:reservar:conflito-de-regra");
     private static final URI TIPO_CONFLITO_DE_CONSTRAINT = URI.create("urn:reservar:conflito-de-constraint");
+    private static final URI TIPO_CONFLITO_CONCORRENTE = URI.create("urn:reservar:conflito-concorrente");
     private static final URI TIPO_NAO_ENCONTRADO = URI.create("urn:reservar:nao-encontrado");
     private static final URI TIPO_REQUISICAO_INVALIDA = URI.create("urn:reservar:requisicao-invalida");
 
@@ -36,11 +38,11 @@ public class ApiExceptionHandler {
 
     /**
      * Conflito detectado pela <b>constraint</b>, depois do flush. Mesmo 409, {@code type}
-     * diferente: hoje so o UNIQUE de cliente.email chega aqui, mas quando a EXCLUDE com
-     * tstzrange entrar na V2 a sobreposicao perdida pelo TOCTOU vai comecar a cair neste
-     * handler. Separar os dois agora significa que a metrica do 1B distingue "a regra pegou"
-     * de "a regra deixou passar e o banco segurou" -- que e exatamente o numero que mede a
-     * janela de corrida. Misturados num handler so, essa informacao se perde.
+     * diferente: e aqui que cai a sobreposicao que o TOCTOU deixou passar, barrada pela
+     * EXCLUDE da V2 (alem do UNIQUE de cliente.email). Separar da deteccao por regra e o que
+     * permite medir a janela de corrida: a razao entre os dois contadores diz quantas vezes a
+     * verificacao em Java perdeu para a concorrencia. Misturados num handler so, essa
+     * informacao se perde.
      */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ProblemDetail conflitoDeConstraint(DataIntegrityViolationException e) {
@@ -49,6 +51,31 @@ public class ApiExceptionHandler {
         problema.setTitle("Conflito de integridade");
         problema.setType(TIPO_CONFLITO_DE_CONSTRAINT);
         problema.setProperty("detectadoPor", "constraint");
+        return problema;
+    }
+
+    /**
+     * Terceira forma de o mesmo conflito chegar, e a que so apareceu depois da V2 ir para o
+     * banco: quando as duas transacoes gravam ao mesmo tempo, cada INSERT insere a tupla e so
+     * entao checa a exclusao, encontra a tupla nao-commitada da outra e espera por ela. Espera
+     * mutua, deadlock, e o Postgres mata uma -- o que chega como CannotAcquireLockException,
+     * que <b>nao</b> e subclasse de DataIntegrityViolationException e sem este handler viraria
+     * 500.
+     *
+     * <p>409 e nao 500 porque a causa e conflito real de reserva, nao falha do servidor.
+     * Diferente das outras duas, esta e retentavel: a transacao morta nao chegou a gravar
+     * nada, e uma segunda tentativa ou consegue o horario ou recebe um 409 honesto pela regra.
+     * Retry automatico no servico e candidato registrado, nao implementado -- ele mascararia a
+     * medicao da janela de corrida.
+     */
+    @ExceptionHandler(CannotAcquireLockException.class)
+    public ProblemDetail conflitoConcorrente(CannotAcquireLockException e) {
+        ProblemDetail problema = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
+                "a operacao foi abortada por contencao concorrente; tentar de novo pode resolver");
+        problema.setTitle("Conflito concorrente");
+        problema.setType(TIPO_CONFLITO_CONCORRENTE);
+        problema.setProperty("detectadoPor", "deadlock");
+        problema.setProperty("retentavel", true);
         return problema;
     }
 

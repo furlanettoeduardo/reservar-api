@@ -35,15 +35,24 @@ public class ReservaService {
     }
 
     /**
-     * Versao ingenua de proposito. Passa em qualquer teste single-thread.
+     * A verificacao aqui perde a corrida, e continua perdendo de proposito.
      *
-     * <p>TODO(1B): TOCTOU -- time of check to time of use. Sob READ_COMMITTED (default do
-     * Postgres, confirmado no log de subida) a segunda transacao nao enxerga a linha ainda
-     * nao commitada da primeira: as duas chamam existeSobreposicao(), as duas recebem false,
-     * as duas gravam. Entre o if e o save() nao ha nada segurando a linha. Provar com duas
-     * threads antes de corrigir -- a correcao esconde a evidencia. Candidatos, do mais forte
-     * ao mais fraco: EXCLUDE constraint com tstzrange (V2, unica que vale para escrita vinda
-     * de fora da app), lock pessimista no espaco, @Version na reserva.
+     * <p>TOCTOU -- time of check to time of use. Sob READ_COMMITTED (default do Postgres) a
+     * segunda transacao nao enxerga a linha ainda nao commitada da primeira: as duas chamam
+     * existeSobreposicao(), as duas recebem false, as duas tentam gravar. Reproduzido em
+     * ConcorrenciaReservaIT, que antes da V2 registrava duas reservas sobrepostas confirmadas.
+     *
+     * <p>Isto <b>nao</b> foi corrigido em Java, e nao deve ser. A V2 pos uma EXCLUDE constraint
+     * com tstzrange no banco: a segunda gravacao agora e recusada la. A divisao de papeis e
+     * deliberada -- esta verificacao e caminho rapido, para devolver 409 com mensagem util no
+     * caso comum; a constraint e a garantia, e vale igual para import manual, script de carga
+     * ou um segundo servico, que nenhum lock em Java alcancaria.
+     *
+     * <p>Consequencia que o chamador precisa conhecer: sob concorrencia, este metodo lanca
+     * DataIntegrityViolationException (gravacoes escalonadas) ou CannotAcquireLockException
+     * (gravacoes simultaneas, deadlock na checagem da exclusao). Ambas tratadas em
+     * ApiExceptionHandler, com type distinto para que a razao entre elas meça a janela de
+     * corrida.
      */
     @Transactional
     public ReservaResponse criar(NovaReserva comando) {
