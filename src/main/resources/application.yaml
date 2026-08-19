@@ -1,0 +1,21 @@
+spring:
+  application:
+    name: reservar-api
+  datasource:
+    url: jdbc:postgresql://localhost:5432/reservas
+    username: reservas
+    password: reservas
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
