@@ -147,22 +147,47 @@ inútil.
 
 Não corrigido de propósito. É a linha de base do Bloco 1B.
 
-## Limitação conhecida: TOCTOU na verificação de sobreposição
+## Concorrência: TOCTOU medido e fechado no banco (1B)
 
 `ReservaService.criar` verifica sobreposição e depois grava. Entre as duas coisas não há nada
-segurando a linha. Sob `READ_COMMITTED` (default do Postgres), duas transações concorrentes
-não enxergam a linha ainda não commitada uma da outra: ambas verificam, ambas veem livre,
-ambas gravam.
+segurando a linha: sob `READ_COMMITTED` (default do Postgres, conferido dentro do teste) a
+segunda transação não enxerga a linha ainda não commitada da primeira, então ambas verificam,
+ambas veem livre, e ambas gravam.
 
-Deliberado — a falha precisa ser medida com duas threads antes de ser corrigida, porque a
-correção esconde a evidência. Candidatos, do mais forte ao mais fraco:
+Reproduzido de forma determinística em `ConcorrenciaReservaIT`, com uma barreira que solta as
+duas threads exatamente entre a verificação e a gravação:
 
-1. `EXCLUDE` constraint com `tstzrange` (V2) — a única que também protege escrita vinda de
-   fora da aplicação: import manual, script de carga, um segundo serviço.
-2. Lock pessimista no espaço.
-3. `@Version` na reserva.
+| | rejeitadas | confirmadas | pares sobrepostos |
+|---|---|---|---|
+| antes da V2 | 0 | 2 | **1** — estado inválido gravado |
+| depois da V2 | 1 | 1 | 0 |
 
-Lock otimista e pessimista defendem um caminho de código; constraint defende o dado.
+A correção é a `V2`: uma `EXCLUDE` constraint com `tstzrange(inicio, fim, '[)')`, parcial em
+`status = 'CONFIRMADA'`, replicando no banco a mesma semântica de intervalo meio-aberto que o
+`Periodo` e a JPQL usam. Exige `btree_gist`, porque a constraint mistura `=` em `bigint` com
+`&&` em intervalo e o GiST nativo não tem operator class para igualdade em tipo escalar.
+
+**A verificação em Java continua perdendo a corrida, e isso é deliberado.** Ela é caminho
+rápido — devolve `409` com mensagem útil no caso comum, sem tocar o banco duas vezes. A
+constraint é a garantia, e vale também para import manual, script de carga ou um segundo
+serviço, que nenhum lock em Java alcançaria.
+
+### O banco recusa de duas formas, e as duas importam
+
+| Escalonamento | Erro do Postgres | Exceção | `detectadoPor` |
+|---|---|---|---|
+| Uma commita antes de a outra gravar | `exclusion_violation` | `DataIntegrityViolationException` | `constraint` |
+| As duas gravam ao mesmo tempo | `deadlock detected` | `CannotAcquireLockException` | `deadlock` |
+
+O deadlock acontece porque cada `INSERT` grava a tupla e **depois** checa a exclusão: cada
+transação encontra a tupla não-commitada da outra e espera por ela. `CannotAcquireLockException`
+não é subclasse de `DataIntegrityViolationException` — sem handler próprio, esse caminho
+devolveria `500`. Um teste que cobrisse os dois casos num só seria flaky, porque qual deles
+ocorre depende de quem chega primeiro ao `INSERT`; cada um tem o seu, forçado a acontecer.
+
+Retry automático no serviço para o caso retentável é candidato registrado e não implementado:
+ele mascararia a medição da janela de corrida, que é a razão entre os contadores de
+`detectadoPor`.
 
 ## Decisões de arquitetura
 
