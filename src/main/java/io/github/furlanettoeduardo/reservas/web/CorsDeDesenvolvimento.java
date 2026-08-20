@@ -1,4 +1,4 @@
-package io.github.furlanettoeduardo.reservas.dev;
+package io.github.furlanettoeduardo.reservas.web;
 
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -15,6 +15,11 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  *
  * <p>Metodos limitados a GET e POST porque sao os unicos que a API expoe -- cancelamento e POST
  * em {@code /reservas/{id}/cancelamento}, nao DELETE.
+ *
+ * <p>Mora em {@code web} e nao em {@code dev}, apesar de ser ativada por perfil. O perfil diz
+ * <b>quando</b> a classe esta ativa; o pacote diz a <b>que camada</b> ela pertence, e CORS e
+ * configuracao de HTTP. A regra de arquitetura "somente a web conhece o protocolo HTTP" pegou
+ * essa classe fora de lugar na primeira execucao.
  */
 @Configuration
 @Profile("dev")

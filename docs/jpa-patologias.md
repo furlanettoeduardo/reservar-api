@@ -22,6 +22,12 @@ um teste que exige um desfecho que não governa falham pelo mesmo motivo: a asse
 corresponde ao escopo de controle do teste. Frouxa demais num caso, apertada demais no outro,
 mesma origem.
 
+**4. Cobertura de mutação só atesta o que os mutadores expressam.** O Pitest matou 12 de 12
+mutantes em `Espaco.calcularValor` sem gerar um único que alterasse o `RoundingMode` — não existe
+mutador para constante de enum. O teste que fechou esse vazio de verdade moveu o score em zero.
+Mesma família da regra 3: a ferramenta responde a pergunta que ela sabe fazer, não a que você
+tem.
+
 ## Status
 
 | # | Patologia | Estado | Evidência |

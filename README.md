@@ -358,6 +358,91 @@ inicializa proxies em silêncio.
 Conclusão prática: coleção de **ids**, não de entidades. Detalhes em
 [`docs/jpa-patologias.md`](docs/jpa-patologias.md).
 
+## Arquitetura executável e cobertura de mutação
+
+### ArchUnit: invariantes separados de descrições
+
+As regras estão em dois arquivos, e a separação é o ponto:
+
+| Arquivo | O que descreve | Na refatoração hexagonal |
+|---|---|---|
+| `InvariantesArquiteturaisTests` | verdades que valem antes e depois | **não deve quebrar** |
+| `EstruturaAtualTests` | a estrutura de hoje, como linha de base | **deve quebrar** |
+
+Sem essa separação, um build vermelho durante a refatoração tem duas leituras — "violei um
+invariante" ou "a regra descrevia a estrutura antiga" — e a tentação é reescrever a regra para
+acomodar o que foi feito. Aí o ArchUnit vira decoração.
+
+Os invariantes: o domínio não conhece Spring, não depende de `web`/`service`/`repository`, só a
+camada web toca HTTP, o controller não alcança o repositório direto, e ninguém usa `java.util.Date`.
+
+A linha de base inclui o alvo da refatoração medido: hoje **exatamente** `Espaco`, `Cliente` e
+`Reserva` dependem de `jakarta.persistence`, enquanto `Periodo` e `StatusReserva` já são livres de
+framework. Quando o mapeamento virar adaptador, esse conjunto fica vazio e o teste falha — a
+falha é o registro da mudança, como em `ConcorrenciaReservaIT` e `AtualizacaoPerdidaIT`.
+
+**As regras foram testadas com dente.** Um `import org.springframework.util.Assert` numa classe de
+domínio faz o build quebrar; sem ele, passa. `resideInAPackage("..domain..")` passa em silêncio se
+o padrão estiver errado, então uma regra de arquitetura que nunca falhou não é regra.
+
+E ela pegou algo na primeira execução: `CorsDeDesenvolvimento` estava no pacote `dev` e depende de
+`org.springframework.web`. O perfil diz **quando** a classe está ativa; o pacote diz a **que
+camada** ela pertence, e CORS é configuração de HTTP. A classe mudou de pacote.
+
+### Pitest: o conjunto de mutadores importa mais que o score
+
+Restrito ao domínio e rodando só contra `PeriodoTests` — o projeto inteiro levaria minutos, e os
+ITs sobem Testcontainers, que o Pitest reexecutaria por mutante. Não roda no ciclo padrão:
+
+```bash
+./mvnw test-compile org.pitest:pitest-maven:mutationCoverage
+```
+
+| Classe | Mutantes | Mortos | Sem cobertura unitária | Sobreviveram |
+|---|---|---|---|---|
+| `Periodo` | 13 | **13** | 0 | 0 |
+| `Espaco` | 53 | 13 | 38 | 2 |
+| `Cliente` | 37 | 0 | 37 | 0 |
+| `Reserva` | 53 | 0 | 53 | 0 |
+
+Os 17% globais não são um sinal de qualidade: `Cliente` e `Reserva` aparecem inteiros como "sem
+cobertura" porque quem os exercita são os ITs, que o Pitest não roda. O que o relatório diz de
+útil é por classe.
+
+**Os dois sobreviventes cobertos** são `MemberVariableMutator` removendo as atribuições de `nome` e
+`capacidade` no construtor de `Espaco`. `PeriodoTests` só lê `precoHora`, então as outras
+atribuições são inobserváveis ali — e é assim que deve ser: quem assere `nome` e `capacidade` é
+`EspacoPersistenceIT`. Sobrevivente que não indica teste fraco, indica teste com escopo certo.
+
+### O achado: o mutador que não existe
+
+O conjunto **padrão** do Pitest gerava **um** mutante em `calcularValor` (retornar `null`).
+Aritmética de `BigDecimal` é chamada de método, não opcode, então os mutadores aritméticos não
+disparam. Com `ALL`, aparecem doze — incluindo `BigDecimalMutator`, que troca `multiply` por
+`divide`. Num domínio que calcula dinheiro, o conjunto padrão é cego justamente onde os bugs
+moram.
+
+Mas mesmo com `ALL`, **nenhum mutante altera o `RoundingMode`** — não existe mutador para
+constante de enum. Então os 12 mutantes mortos em `calcularValor` não atestam nada sobre
+`HALF_UP`.
+
+E o vazio era real. Os casos que já existiam não discriminavam: 100,00/h por 10 min dá
+16,6666…, e `HALF_UP`, `HALF_DOWN` e `HALF_EVEN` concordam em 16,67, porque o dígito descartado é
+6 e não 5. Precisava de uma metade exata:
+
+| 33,33/h por 30 min | = 16,665 exato |
+|---|---|
+| `HALF_UP` | **16,67** |
+| `HALF_DOWN` | 16,66 |
+| `HALF_EVEN` | 16,66 |
+
+Com o teste novo, mutar `HALF_UP` para `HALF_DOWN` ou `HALF_EVEN` à mão faz falhar exatamente um
+teste — o novo. Antes dele, nenhum.
+
+> **O teste que fechou o vazio moveu o score de mutação em exatamente zero:** 156 mutantes, 26
+> mortos, antes e depois. Cobertura de mutação só atesta o que o conjunto de mutadores consegue
+> expressar, e perseguir o número teria escondido o vazio em vez de revelá-lo.
+
 ## Patologias medidas
 
 O documento [`docs/jpa-patologias.md`](docs/jpa-patologias.md) reúne cada patologia de JPA,

@@ -105,6 +105,12 @@
 			<artifactId>testcontainers-postgresql</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<dependency>
+			<groupId>com.tngtech.archunit</groupId>
+			<artifactId>archunit-junit5</artifactId>
+			<version>1.4.1</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
@@ -118,6 +124,48 @@
 				Failsafe (fase verify) roda *IT: tudo que sobe Testcontainers.
 				`mvn test` da feedback em segundos; `mvn verify` roda os dois.
 			-->
+			<!--
+				Pitest restrito ao dominio, e rodando so contra PeriodoTests.
+				O projeto inteiro levaria minutos e viraria sabotagem do proprio CI; e os ITs
+				sobem Testcontainers, que Pitest reexecutaria por mutante.
+				Nao roda no ciclo padrao: `mvn test-compile org.pitest:pitest-maven:mutationCoverage`.
+			-->
+			<plugin>
+				<groupId>org.pitest</groupId>
+				<artifactId>pitest-maven</artifactId>
+				<version>1.20.4</version>
+				<dependencies>
+					<dependency>
+						<groupId>org.pitest</groupId>
+						<artifactId>pitest-junit5-plugin</artifactId>
+						<version>1.2.2</version>
+					</dependency>
+				</dependencies>
+				<configuration>
+					<targetClasses>
+						<param>io.github.furlanettoeduardo.reservas.domain.*</param>
+					</targetClasses>
+					<targetTests>
+						<param>io.github.furlanettoeduardo.reservas.PeriodoTests</param>
+					</targetTests>
+					<!--
+						ALL, e nao o conjunto padrao. O padrao nao tem BigDecimalMutator, e
+						aritmetica de BigDecimal e chamada de metodo e nao opcode, entao os
+						mutadores aritmeticos nao disparam. Com o padrao, calcularValor gerava
+						UM mutante (retornar null); com ALL, gera doze, incluindo trocar
+						multiply por divide. Num dominio que calcula dinheiro, o conjunto
+						padrao e cego justamente onde os bugs moram.
+					-->
+					<mutators>
+						<param>ALL</param>
+					</mutators>
+					<outputFormats>
+						<param>HTML</param>
+						<param>XML</param>
+					</outputFormats>
+					<timestampedReports>false</timestampedReports>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-failsafe-plugin</artifactId>

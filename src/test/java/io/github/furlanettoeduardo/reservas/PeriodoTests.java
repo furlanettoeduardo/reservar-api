@@ -72,6 +72,38 @@ class PeriodoTests {
                 .isEqualByComparingTo(esperado);
     }
 
+    /**
+     * O caso que discrimina HALF_UP de HALF_DOWN e HALF_EVEN, e que faltava.
+     *
+     * <p>33,33/h por 30 min da 16,665 <b>exato</b> -- 33,33 x 1800 = 59994, dividido por 3600.
+     * Com a metade exata na casa descartada, os tres modos discordam:
+     *
+     * <pre>
+     * HALF_UP   -> 16,67
+     * HALF_DOWN -> 16,66
+     * HALF_EVEN -> 16,66   (o 6 anterior e par)
+     * </pre>
+     *
+     * <p>Os outros casos deste arquivo nao discriminam: 100,00/h por 10 min da
+     * 16,6666... e os tres modos concordam em 16,67, porque o digito descartado e 6 e nao 5.
+     *
+     * <p>Achado a mao, e nao por mutation testing: o Pitest gera 12 mutantes em calcularValor --
+     * inclusive trocar multiply por divide -- e mata todos, mas <b>nenhum</b> deles altera o
+     * RoundingMode, porque nao existe mutador para constante de enum. Cobertura de mutacao so
+     * atesta o que o conjunto de mutadores consegue expressar.
+     */
+    @Test
+    void arredondaParaCimaNaMetadeExata() {
+        Espaco espaco = new Espaco("Sala", 10, new BigDecimal("33.33"));
+
+        assertThat(espaco.calcularValor(new Periodo(hora("13:00"), hora("13:30"))))
+                .as("16,665 exato: HALF_UP da 16,67, HALF_DOWN e HALF_EVEN dao 16,66. "
+                        + "Valor cobrado arredonda a favor de quem cobra, e a escolha e "
+                        + "comercial, nao estatistica -- banker's rounding existe para nao "
+                        + "enviesar somas, e nao e o caso aqui.")
+                .isEqualByComparingTo("16.67");
+    }
+
     @Test
     void multiplicaAntesDeDividirParaNaoArredondarNoMeio() {
         Espaco espaco = new Espaco("Sala", 10, new BigDecimal("100.00"));
