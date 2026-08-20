@@ -11,6 +11,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.Generated;
 import org.hibernate.generator.EventType;
 
@@ -23,9 +24,10 @@ import java.time.Instant;
  * <p>Relacionamentos <b>unidirecionais</b>: nem {@link Espaco} nem {@link Cliente} tem a
  * colecao inversa. Ver a nota em {@link #espaco}.
  *
- * <p>Sem {@code @Version} de proposito. O lock otimista entra depois que a falha de
- * concorrencia da verificacao de sobreposicao for medida com duas threads (1B) -- adiciona-lo
- * agora mascararia o problema antes de ele ser observado.
+ * <p>{@code @Version} entrou na V3, depois de a falha de concorrencia ser medida -- primeiro o
+ * TOCTOU da verificacao de sobreposicao, fechado pela EXCLUDE constraint da V2, e depois o lost
+ * update do UPDATE cego, em AtualizacaoPerdidaIT. Adiciona-lo antes teria mascarado as duas
+ * evidencias.
  */
 @Entity
 @Table(name = "reserva")
@@ -73,6 +75,18 @@ public class Reserva {
     @Generated(event = EventType.INSERT)
     @Column(name = "criado_em", nullable = false, updatable = false)
     private Instant criadoEm;
+
+    /**
+     * Lock otimista. Com ele o UPDATE ganha {@code and versao = ?}, entao a segunda transacao a
+     * commitar afeta 0 linhas e o Hibernate lanca OptimisticLockException -- em vez de
+     * sobrescrever em silencio o campo que a outra alterou.
+     *
+     * <p>Nao tem setter: quem controla e o Hibernate. Entrou na V3, depois de o lost update ser
+     * medido, porque adicionar antes teria escondido a evidencia.
+     */
+    @Version
+    @Column(name = "versao", nullable = false)
+    private Long versao;
 
     protected Reserva() {
     }

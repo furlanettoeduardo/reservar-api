@@ -13,6 +13,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -132,7 +133,21 @@ class ReservaControllerTests {
                         .content(corpo(1L, 2L, INICIO, FIM)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("urn:reservar:conflito-concorrente"))
-                .andExpect(jsonPath("$.detectadoPor").value("deadlock"))
+                .andExpect(jsonPath("$.detectadoPor").value("contencao"))
+                .andExpect(jsonPath("$.retentavel").value(true));
+    }
+
+    @Test
+    void conflitoDeLockOtimistaCaiNoMesmoHandlerDeContencao() throws Exception {
+        willThrow(new ObjectOptimisticLockingFailureException("espaco", 1L))
+                .given(service).criar(any(NovaReserva.class));
+
+        mockMvc.perform(post("/reservas")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(corpo(1L, 2L, INICIO, FIM)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("urn:reservar:conflito-concorrente"))
+                .andExpect(jsonPath("$.detectadoPor").value("contencao"))
                 .andExpect(jsonPath("$.retentavel").value(true));
     }
 

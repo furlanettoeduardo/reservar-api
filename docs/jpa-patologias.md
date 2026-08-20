@@ -28,7 +28,7 @@ mesma origem.
 |---|---|---|---|
 | 1 | N+1 na listagem | provada e corrigida — 52 → **1** | `CorrecaoNMaisUmIT`, `ContagemDeQueriesIT` |
 | 2 | `LazyInitializationException` | provada na fronteira do serviço | `ContagemDeQueriesIT` |
-| 3 | Update fantasma e lost update | provadas | `ReservaServiceIT`, `AtualizacaoPerdidaIT` |
+| 3 | Update fantasma e lost update | provadas e corrigidas — `V3` | `ReservaServiceIT`, `AtualizacaoPerdidaIT` |
 | 4 | Autoinvocação de `@Transactional` | provada e corrigida | `TransacaoIT` |
 | 5 | Checked exception sem rollback | provada e corrigida | `TransacaoIT` |
 | 6 | TOCTOU na verificação de sobreposição | provada e fechada no banco | `ConcorrenciaReservaIT` + `V2` |
@@ -153,7 +153,7 @@ sintoma, quando acontece, é tempo gasto em lugar nenhum no profiler.
 
 ---
 
-## 3. Update fantasma — dirty checking sem `save()`
+## 3. Update fantasma e lost update — dirty checking e `UPDATE` cego
 
 **Mecanismo.** Dentro da transação, mudar o objeto é suficiente: o dirty checking compara o
 estado atual com o snapshot da carga e emite o `UPDATE` no flush.
@@ -187,23 +187,63 @@ porque ambas reescrevem as seis colunas. Sem `@Version`, o último gravador ganh
 É a mesma classe do `total++` sem sincronização — a região crítica é a linha inteira em vez de
 um `int`.
 
-### O lost update, medido
+### O lost update, medido em três estados
 
 A afirmação acima — duas edições de campos diferentes e uma apaga a outra — ficou raciocinada e
-não medida por um tempo, num documento cuja primeira regra é medir antes de corrigir. Agora tem
-teste: uma thread muda `nome`, a outra muda `capacidade`, com barreira garantindo que as duas
-carreguem antes de qualquer uma gravar.
+não medida por um tempo, num documento cuja primeira regra é medir antes de corrigir. `V3`
+adicionou `@Version`, e o teste mudou de lado no processo:
 
 ```
-[lost update] falhas=0 | nome='Sala Azul' | capacidade=99 | sobreviveram=1 de 2
+antes da V3:   falhas=0 | nome='Sala Azul'           | capacidade=99  <- rename perdido, em silêncio
+depois da V3:  falhas=1 | nome='Sala Azul Reformada' | capacidade=30  <- conflito reportado
+V3 + retry:    falhas=0 | nome='Sala Azul Reformada' | capacidade=99  <- as duas sobreviveram
 ```
 
-**Nenhuma das duas transações falhou.** As duas "deram certo", e o rename desapareceu. Exatamente
-uma das duas edições sobreviveu — a segunda a commitar reescreveu todas as colunas a partir do
-snapshot que ela carregou, sobrescrevendo o campo da primeira com o valor velho.
+**Antes: `falhas=0`.** Nenhuma das duas transações falhou. As duas "deram certo", e uma edição
+desapareceu. A segunda a commitar reescreveu todas as colunas a partir do snapshot que ela
+carregou, sobrescrevendo o campo da primeira com o valor velho.
 
-O controle roda as mesmas duas edições em sequência e as duas coexistem, o que isola a
-concorrência como a única variável.
+**Depois:** o `UPDATE` ganhou o predicado de versão, afetou 0 linhas, e o Hibernate reclamou:
+
+```
+ObjectOptimisticLockingFailureException: Unexpected row count (expected row count 1 but was 0)
+[update espaco set capacidade=?, nome=?, preco_hora=?, versao=? where id=? and versao=?]
+```
+
+### O que `@Version` não faz
+
+O estado final do segundo cenário é **o mesmo** do primeiro: uma edição só. Compare as duas
+primeiras linhas da tabela — muda qual sobreviveu, não quantas.
+
+> `@Version` não preserva as duas escritas. Ele troca **perda silenciosa** por **conflito
+> reportado**.
+
+Preservar as duas é trabalho do retry, que usa a informação que o `@Version` passou a dar:
+recarregar em transação nova — já com a alteração da outra thread visível — e reaplicar a sua. O
+terceiro cenário faz isso e as duas edições coexistem.
+
+É a distinção entre detectar e resolver, e ela costuma ser colapsada numa só.
+
+### E a `V3` moveu a falha para outra camada, de novo
+
+`ObjectOptimisticLockingFailureException` descende de `TransientDataAccessException` — a mesma
+família que o handler já capturava por causa do deadlock da `EXCLUDE`. Então o lock otimista
+começou a cair num handler cuja propriedade dizia `detectadoPor: "deadlock"`, o que passou a
+estar errado.
+
+Correção: o rótulo virou `"contencao"`, que descreve a família em vez de um membro. Terceira
+ocorrência do padrão, e a primeira em que a camada afetada era um **rótulo de contrato** e não um
+status code — o tipo de erro que nenhum teste de status code pega.
+
+### Nota de migration
+
+```sql
+ALTER TABLE espaco ADD COLUMN versao BIGINT NOT NULL DEFAULT 0;
+```
+
+O `DEFAULT 0` não é estilo. `ADD COLUMN ... NOT NULL` sem default falha em tabela com linhas — e
+essa é exatamente a classe de erro que schema vazio nunca pega, junto com `UNIQUE` sobre
+duplicatas e `CHECK` sobre linhas fora do range. Migration é sobre dados que já existem.
 
 
 ---

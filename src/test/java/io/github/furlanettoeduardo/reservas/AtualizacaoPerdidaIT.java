@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
@@ -39,6 +40,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Uma thread muda {@code nome}, a outra muda {@code capacidade}. Nada em conflito. A barreira
  * garante que as duas carreguem antes de qualquer uma gravar -- sem isso o experimento
  * dependeria de sorte, e teste de concorrência que depende de sorte não prova nada.
+ *
+ * <p>Três estados medidos:
+ *
+ * <pre>
+ * antes da V3:        falhas=0 | uma edição sobreviveu | a outra desapareceu em silêncio
+ * depois da V3:       falhas=1 | uma edição sobreviveu | a outra foi REPORTADA como conflito
+ * V3 + retry:         falhas=0 | as DUAS edições sobreviveram
+ * </pre>
+ *
+ * <p>O meio da tabela é o que costuma ser mal entendido: {@code @Version} <b>não</b> preserva as
+ * duas escritas. Ele troca perda silenciosa por conflito reportado. Preservar as duas é trabalho
+ * do retry, que usa a informação que o {@code @Version} passou a dar.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -74,7 +87,7 @@ class AtualizacaoPerdidaIT {
     }
 
     @Test
-    void duasEdicoesDeCamposDiferentesEUmaApagaAOutra() throws Exception {
+    void duasEdicoesConcorrentes_aSegundaFalhaEmVezDeSobrescrever() throws Exception {
         CyclicBarrier ambasCarregaram = new CyclicBarrier(2);
 
         List<Exception> falhas = executar(
@@ -85,28 +98,61 @@ class AtualizacaoPerdidaIT {
                 "select nome from espaco where id = ?", String.class, espacoId);
         int capacidade = jdbc.queryForObject(
                 "select capacidade from espaco where id = ?", Integer.class, espacoId);
+        long versao = jdbc.queryForObject(
+                "select versao from espaco where id = ?", Long.class, espacoId);
 
         boolean nomeSobreviveu = NOME_NOVO.equals(nome);
         boolean capacidadeSobreviveu = capacidade == CAPACIDADE_NOVA;
 
-        System.out.printf("%n[lost update] falhas=%d | nome='%s' | capacidade=%d "
-                        + "| sobreviveram=%d de 2%n",
-                falhas.size(), nome, capacidade,
-                (nomeSobreviveu ? 1 : 0) + (capacidadeSobreviveu ? 1 : 0));
+        System.out.printf("%n[lost update] apos V3: falhas=%d | nome='%s' | capacidade=%d "
+                + "| versao=%d%n", falhas.size(), nome, capacidade, versao);
 
         assertThat(falhas)
-                .as("nenhuma das duas transacoes falhou: as duas 'deram certo'")
-                .isEmpty();
+                .as("ANTES da V3 este numero era 0: as duas transacoes 'davam certo'")
+                .hasSize(1);
+        assertThat(falhas.getFirst())
+                .as("o UPDATE virou 'where id = ? and versao = ?', afetou 0 linhas, e o "
+                        + "Hibernate reclamou em vez de sobrescrever")
+                .isInstanceOf(ObjectOptimisticLockingFailureException.class);
 
         assertThat(nomeSobreviveu ^ capacidadeSobreviveu)
-                .as("EXATAMENTE UMA das duas edicoes sobreviveu. Nao havia conflito logico -- "
-                        + "campos diferentes -- mas o UPDATE reescreve todas as colunas a partir "
-                        + "do snapshot que cada transacao carregou, e a segunda a commitar "
-                        + "sobrescreve o campo da primeira com o valor velho. Silenciosamente.")
+                .as("o estado final e o MESMO de antes: uma edicao so. @Version nao preserva as "
+                        + "duas escritas -- ele transforma perda silenciosa em conflito "
+                        + "reportado. Preservar as duas exige retentar.")
                 .isTrue();
+        assertThat(versao).as("uma gravacao bem-sucedida incrementou a versao").isEqualTo(1);
     }
 
-    /** Controle: em sequencia, as duas edicoes coexistem. */
+    /**
+     * O terceiro estado, e o unico em que as duas edicoes coexistem: detectar, recarregar e
+     * reaplicar. E o que fecha o raciocinio -- {@code @Version} da a informacao, o retry usa a
+     * informacao.
+     */
+    @Test
+    void comRetryAsDuasEdicoesSobrevivem() throws Exception {
+        CyclicBarrier ambasCarregaram = new CyclicBarrier(2);
+
+        List<Exception> falhas = executar(
+                editorComRetry(ambasCarregaram, e -> e.setNome(NOME_NOVO)),
+                editorComRetry(ambasCarregaram, e -> e.setCapacidade(CAPACIDADE_NOVA)));
+
+        String nome = jdbc.queryForObject(
+                "select nome from espaco where id = ?", String.class, espacoId);
+        int capacidade = jdbc.queryForObject(
+                "select capacidade from espaco where id = ?", Integer.class, espacoId);
+
+        System.out.printf("[lost update] com retry: falhas=%d | nome='%s' | capacidade=%d%n",
+                falhas.size(), nome, capacidade);
+
+        assertThat(falhas).isEmpty();
+        assertThat(nome).isEqualTo(NOME_NOVO);
+        assertThat(capacidade)
+                .as("as duas edicoes coexistem: a que perdeu recarregou o estado ja com a "
+                        + "alteracao da outra e reaplicou a sua")
+                .isEqualTo(CAPACIDADE_NOVA);
+    }
+
+    /** Controle: em sequencia, as duas edicoes coexistem sem retry nenhum. */
     @Test
     void sequencialmenteAsDuasEdicoesCoexistem() {
         transacao.executeWithoutResult(status ->
@@ -124,17 +170,39 @@ class AtualizacaoPerdidaIT {
     private Callable<Object> editor(CyclicBarrier ambasCarregaram, Consumer<Espaco> mutacao) {
         return () -> {
             try {
-                transacao.executeWithoutResult(status -> {
-                    Espaco espaco = espacoRepository.findById(espacoId).orElseThrow();
-                    aguardar(ambasCarregaram);
-                    mutacao.accept(espaco);
-                    // commit ao retornar: dirty checking emite o UPDATE de todas as colunas
-                });
+                editarUmaVez(ambasCarregaram, mutacao);
                 return "ok";
             } catch (RuntimeException e) {
                 return e;
             }
         };
+    }
+
+    private Callable<Object> editorComRetry(CyclicBarrier ambasCarregaram,
+                                           Consumer<Espaco> mutacao) {
+        return () -> {
+            try {
+                editarUmaVez(ambasCarregaram, mutacao);
+            } catch (ObjectOptimisticLockingFailureException conflito) {
+                // Recarrega em transacao nova, ja com a alteracao da outra thread visivel, e
+                // reaplica a sua. Sem barreira desta vez: a corrida ja aconteceu.
+                transacao.executeWithoutResult(status ->
+                        mutacao.accept(espacoRepository.findById(espacoId).orElseThrow()));
+            } catch (RuntimeException e) {
+                return e;
+            }
+            return "ok";
+        };
+    }
+
+    private void editarUmaVez(CyclicBarrier ambasCarregaram, Consumer<Espaco> mutacao) {
+        transacao.executeWithoutResult(status -> {
+            Espaco espaco = espacoRepository.findById(espacoId).orElseThrow();
+            aguardar(ambasCarregaram);
+            mutacao.accept(espaco);
+            // commit ao retornar: dirty checking emite o UPDATE de todas as colunas,
+            // agora com "and versao = ?" no where
+        });
     }
 
     private static void aguardar(CyclicBarrier barreira) {

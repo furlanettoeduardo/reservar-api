@@ -280,6 +280,20 @@ quando a exceção atravessa a fronteira transacional depois de algo já ter sid
 Os métodos deliberadamente quebrados vivem em `PatologiasTransacionais`, em código de teste —
 produção não carrega isso.
 
+### Lock otimista: `V3`
+
+O `UPDATE` do Hibernate reescreve todas as colunas em qualquer alteração, então duas edições de
+campos **diferentes** da mesma linha se apagavam sem conflito lógico. Medido em três estados:
+
+| | falhas | resultado |
+|---|---|---|
+| antes da `V3` | 0 | uma edição sobreviveu, a outra desapareceu **em silêncio** |
+| depois da `V3` | 1 | uma edição sobreviveu, a outra foi **reportada** como conflito |
+| `V3` + retry | 0 | **as duas** edições sobreviveram |
+
+`@Version` não preserva as duas escritas — troca perda silenciosa por conflito reportado.
+Preservar as duas é trabalho do retry.
+
 ## `equals`/`hashCode` de entidade JPA: as duas receitas erradas
 
 As entidades usam `instanceof` no `equals` e uma constante de classe no `hashCode`. As duas

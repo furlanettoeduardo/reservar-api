@@ -72,8 +72,15 @@ public class ApiExceptionHandler {
      * este handler seria 500, porque TransientDataAccessException nao descende de
      * DataIntegrityViolationException -- as duas sao DataAccessException por ramos diferentes.
      *
-     * <p>Retry automatico no servico e candidato registrado, nao implementado: ele mascararia
-     * a razao entre os contadores de detectadoPor, que e a medida da janela de corrida.
+     * <p>A V3 trouxe um segundo membro da familia para este mesmo handler:
+     * ObjectOptimisticLockingFailureException, do @Version. O rotulo era "deadlock" e ficou
+     * errado -- virou "contencao", que descreve a familia em vez de um membro. Terceira vez que
+     * corrigir um invariante moveu a falha para outra camada, e a primeira em que a camada
+     * afetada era um rotulo de contrato e nao um status code.
+     *
+     * <p>Retry automatico no servico continua candidato registrado e nao implementado: ele
+     * mascararia a razao entre os contadores de detectadoPor, que e a medida da janela de
+     * corrida. AtualizacaoPerdidaIT mostra o retry funcionando no nivel do teste.
      */
     @ExceptionHandler(TransientDataAccessException.class)
     public ProblemDetail conflitoConcorrente(TransientDataAccessException e) {
@@ -81,7 +88,7 @@ public class ApiExceptionHandler {
                 "a operacao foi abortada por contencao concorrente; tentar de novo pode resolver");
         problema.setTitle("Conflito concorrente");
         problema.setType(TIPO_CONFLITO_CONCORRENTE);
-        problema.setProperty("detectadoPor", "deadlock");
+        problema.setProperty("detectadoPor", "contencao");
         problema.setProperty("retentavel", true);
         return problema;
     }

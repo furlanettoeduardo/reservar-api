@@ -6,6 +6,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.Generated;
 import org.hibernate.generator.EventType;
 
@@ -50,6 +51,18 @@ public class Espaco {
     @Generated(event = EventType.INSERT)
     @Column(name = "criado_em", nullable = false, updatable = false)
     private Instant criadoEm;
+
+    /**
+     * Lock otimista. Com ele o UPDATE ganha {@code and versao = ?}, entao a segunda transacao a
+     * commitar afeta 0 linhas e o Hibernate lanca OptimisticLockException -- em vez de
+     * sobrescrever em silencio o campo que a outra alterou.
+     *
+     * <p>Nao tem setter: quem controla e o Hibernate. Entrou na V3, depois de o lost update ser
+     * medido, porque adicionar antes teria escondido a evidencia.
+     */
+    @Version
+    @Column(name = "versao", nullable = false)
+    private Long versao;
 
     /** Exigido pelo Hibernate, que instancia por reflexao. protected = "nao chame isso". */
     protected Espaco() {
