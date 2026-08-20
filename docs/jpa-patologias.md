@@ -28,12 +28,13 @@ mesma origem.
 |---|---|---|---|
 | 1 | N+1 na listagem | provada e corrigida — 52 → **1** | `CorrecaoNMaisUmIT`, `ContagemDeQueriesIT` |
 | 2 | `LazyInitializationException` | provada na fronteira do serviço | `ContagemDeQueriesIT` |
-| 3 | Update fantasma (dirty checking) | provada | `ReservaServiceIT.cancelarGravaSemChamarSave` |
+| 3 | Update fantasma e lost update | provadas | `ReservaServiceIT`, `AtualizacaoPerdidaIT` |
 | 4 | Autoinvocação de `@Transactional` | provada e corrigida | `TransacaoIT` |
 | 5 | Checked exception sem rollback | provada e corrigida | `TransacaoIT` |
 | 6 | TOCTOU na verificação de sobreposição | provada e fechada no banco | `ConcorrenciaReservaIT` + `V2` |
 | — | Ordem de flush do Hibernate | descoberta acidental | `ContagemDeQueriesIT` (comentário) |
 | 7 | Entidade em `HashSet` com proxy | medida | `ContratoDeHashCodeTests`, `ProxyEmHashSetIT` |
+| 8 | `BigDecimal.equals` vs `compareTo` | provada e corrigida | `EscalaDecimalIT` |
 | 9 | Índice e plano de execução | medida — B-tree **não** é redundante | `PlanoDeExecucaoIT` |
 | 10 | Paginação com `JOIN FETCH` de coleção | **não se aplica** | não há coleção — [ADR 0001](adr/0001-relacionamento-unidirecional.md) |
 
@@ -185,6 +186,25 @@ campos **diferentes** da mesma linha não conflitam logicamente, e mesmo assim u
 porque ambas reescrevem as seis colunas. Sem `@Version`, o último gravador ganha, em silêncio.
 É a mesma classe do `total++` sem sincronização — a região crítica é a linha inteira em vez de
 um `int`.
+
+### O lost update, medido
+
+A afirmação acima — duas edições de campos diferentes e uma apaga a outra — ficou raciocinada e
+não medida por um tempo, num documento cuja primeira regra é medir antes de corrigir. Agora tem
+teste: uma thread muda `nome`, a outra muda `capacidade`, com barreira garantindo que as duas
+carreguem antes de qualquer uma gravar.
+
+```
+[lost update] falhas=0 | nome='Sala Azul' | capacidade=99 | sobreviveram=1 de 2
+```
+
+**Nenhuma das duas transações falhou.** As duas "deram certo", e o rename desapareceu. Exatamente
+uma das duas edições sobreviveu — a segunda a commitar reescreveu todas as colunas a partir do
+snapshot que ela carregou, sobrescrevendo o campo da primeira com o valor velho.
+
+O controle roda as mesmas duas edições em sequência e as duas coexistem, o que isola a
+concorrência como a única variável.
+
 
 ---
 
@@ -411,6 +431,60 @@ centenas, com a soma das N buscas em vez de uma amostra. O crescimento com n fic
 log, não em asserção, porque depende da forma de uma árvore que o teste não controla.
 
 Terceira aplicação da regra 3, e a primeira preventiva.
+
+---
+
+## 8. `BigDecimal.equals` compara escala
+
+Este não é exemplo fabricado. O bug existiu aqui e foi encontrado por `curl`, não por teste: o
+mesmo recurso serializava `300.00` na resposta do POST e `300.0000` na listagem.
+
+```
+POST /reservas             -> "valorTotal": 300.00
+GET  /espacos/1/reservas   -> "valorTotal": 300.0000
+```
+
+No POST o `BigDecimal` vem recém-calculado pelo domínio, em escala 2. Na listagem vem lido da
+coluna `NUMERIC(19,4)`, em escala 4. Mesmo valor, contrato inconsistente.
+
+| Comparação | Resultado |
+|---|---|
+| `new BigDecimal("300.00").equals(new BigDecimal("300.0000"))` | `false` |
+| `compareTo` | `0` |
+| `hashCode` | **diferentes** — buckets diferentes num `HashMap` |
+
+### Por que 48 testes não viram
+
+`isEqualByComparingTo` é a asserção **correta** para regra de negócio, exatamente para não
+tropeçar em escala. E é cega para escala por construção. A defesa contra a pegadinha foi o que
+impediu de ver a pegadinha aparecer no contrato HTTP.
+
+> **A asserção tolerante ao detalhe irrelevante para o domínio é cega ao detalhe relevante para
+> o contrato.**
+
+Para regra de negócio, `300.00 == 300.0000`. Para um cliente HTTP comparando string, ou um
+snapshot test, não. São contratos diferentes e precisam de asserções diferentes.
+
+Havia um segundo motivo estrutural: os testes de controller usavam serviço mockado com escala
+fixa, então **os dois caminhos nunca se encontravam**. Cada camada isolada estava correta e a
+inconsistência vivia na costura — a limitação de teste de fatia, e o argumento a favor de ter
+algum caminho ponta a ponta. No caso, foi manual.
+
+### A correção e o teste que a guarda
+
+A normalização mora no DTO, não na entidade: a entidade deve espelhar a coluna, a fronteira do
+contrato é o lugar de fixar escala.
+
+```java
+reserva.getValorTotal().setScale(ESCALA_MONETARIA, RoundingMode.HALF_UP)
+```
+
+O teste de regressão compara os dois caminhos com **igualdade estrita** — `isEqualTo`, não
+`isEqualByComparingTo`. Usar a asserção tolerante aqui deixaria o bug passar de novo, porque é
+precisamente a tolerância que o esconde.
+
+E `HALF_UP`, não `HALF_EVEN`: é valor cobrado, não estatística. Banker's rounding existe para
+não enviesar somas grandes, e não é o caso.
 
 ---
 
