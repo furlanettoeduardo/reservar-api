@@ -97,7 +97,8 @@ class ContagemDeQueriesIT {
         var medicao = contador.medir(() -> service.listarConfirmadasDoEspaco(espacoId));
         List<ReservaResponse> resposta = medicao.resultado();
 
-        System.out.printf("%n[N+1] %d reservas -> %d queries%n", resposta.size(), medicao.queries());
+        System.out.printf("%n[listagem] %d reservas -> %d queries%n",
+                resposta.size(), medicao.queries());
 
         assertThat(resposta).hasSize(QUANTIDADE_DE_RESERVAS);
         assertThat(resposta).allSatisfy(r -> {
@@ -106,13 +107,16 @@ class ContagemDeQueriesIT {
         });
 
         // Igualdade exata, nao isLessThanOrEqualTo. Um teto frouxo passaria calado tanto se o
-        // N+1 piorasse dentro do teto quanto se a correcao chegasse -- e o valor deste teste e
-        // justamente obrigar quem mexer em fetch strategy a encarar o numero e atualiza-lo.
+        // N+1 voltasse dentro do teto quanto se o custo mudasse por outro motivo.
+        //
+        // Este numero era 52 -- 1 listagem + 1 espaco + 1 por cliente distinto -- e foi o teste
+        // que falhou quando o @EntityGraph entrou. Foi o teste falhando que documentou a
+        // correcao. As tres abordagens comparadas estao em CorrecaoNMaisUmIT, onde o caminho
+        // ingenuo continua medido em 52 para o "antes" nao virar folclore.
         assertThat(medicao.queries())
-                .as("BASELINE MEDIDO, nao desejado: 1 listagem + 1 espaco (reusado do cache de "
-                        + "1o nivel nas outras 49) + 1 por cliente distinto. Este numero cai "
-                        + "quando o N+1 for corrigido, e o teste falhar e o sinal de que caiu.")
-                .isEqualTo(QUANTIDADE_DE_RESERVAS + 2);
+                .as("guarda de regressao: se alguem tirar o plano de fetch do repositorio, "
+                        + "este numero volta a crescer com a cardinalidade dos clientes")
+                .isEqualTo(1);
     }
 
     @Test

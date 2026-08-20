@@ -26,7 +26,7 @@ mesma origem.
 
 | # | Patologia | Estado | Evidência |
 |---|---|---|---|
-| 1 | N+1 na listagem | **medida, não corrigida** | `ContagemDeQueriesIT` — 52 queries para 50 reservas |
+| 1 | N+1 na listagem | provada e corrigida — 52 → **1** | `CorrecaoNMaisUmIT`, `ContagemDeQueriesIT` |
 | 2 | `LazyInitializationException` | provada na fronteira do serviço | `ContagemDeQueriesIT` |
 | 3 | Update fantasma (dirty checking) | provada | `ReservaServiceIT.cancelarGravaSemChamarSave` |
 | 4 | Autoinvocação de `@Transactional` | provada e corrigida | `TransacaoIT` |
@@ -39,13 +39,13 @@ mesma origem.
 
 ---
 
-## 1. N+1 na listagem — medida, não corrigida
+## 1. N+1 na listagem — 52 queries viraram 1
 
 **Mecanismo.** Os dois `@ManyToOne` são `LAZY`. O mapeamento para DTO toca
 `reserva.getEspaco().getNome()` e `reserva.getCliente().getNome()`, e cada proxy não
 inicializado custa um `SELECT`.
 
-**Medição.** 50 reservas → **52 queries**: 1 listagem + 1 espaço + 50 clientes.
+**Medição do baseline.** 50 reservas: **52 queries** — 1 listagem + 1 espaço + 50 clientes.
 
 O interessante não é o número, é por que não é 101: as 50 reservas compartilham o espaço, cujo
 proxy inicializa uma vez e acerta o cache de primeiro nível nas outras 49. Os clientes são
@@ -62,14 +62,70 @@ cenário semeia 50 clientes distintos de propósito.
 persistence context e a listagem devolveria 1 query — um "antes" falso, contra o qual qualquer
 correção pareceria inútil.
 
-**Por que a asserção é igualdade exata e não teto.** `isLessThanOrEqualTo(2)` passaria calado
-nos dois sentidos: não pega regressão dentro da folga, nem pega correção acidental. `isEqualTo(52)`
-falha se virar 53 (regressão) e falha se virar 12 (alguém corrigiu e não atualizou o número, ou
-corrigiu sem entender por quê).
+### As três correções, medidas
+
+| Abordagem | Queries | Escopo | Elimina o N+1? |
+|---|---|---|---|
+| nenhuma (baseline) | **52** | — | — |
+| `join fetch` na JPQL | **1** | por consulta | sim |
+| `@EntityGraph` | **1** | por consulta | sim |
+| `default_batch_fetch_size = 25` | **4** | global | não, agrupa |
+
+**`join fetch` e `@EntityGraph` custam o mesmo** — há teste comparando as duas contagens
+diretamente, para que a escolha entre elas seja reconhecida como decisão de organização de
+código e não de performance.
+
+**Adotado: `@EntityGraph`.** O critério é separação de responsabilidade: *o que selecionar* é
+semântica da consulta, *o que carregar junto* é necessidade do caso de uso. Com o graph, a
+cláusula `where` existe num lugar só e cada chamador escolhe seu plano de fetch; com `join
+fetch` na JPQL, cada plano duplicaria a condição — e condição duplicada sai de sincronia.
+
+Na prática ficaram dois métodos sobre a mesma derivação: um sem plano de fetch, para quem só
+precisa das colunas da própria reserva e não deve pagar dois joins, e um com o graph, usado pela
+listagem.
+
+**`default_batch_fetch_size` não é a mesma coisa que as outras duas**, e não é substituto. Ela
+não elimina as cargas: agrupa as N em lotes de até `size` identificadores, com
+`where id in (...)`. Com 50 clientes distintos e lote de 25, as 50 queries viram 2, e o total
+vai a 4 no mesmo método de repositório que custa 52 sem a propriedade. O papel dela é outro:
+**não exige saber de antemão quais associações o caso de uso vai tocar**, então serve como rede
+global para o N+1 que ninguém previu. Plano de fetch explícito onde se sabe; batch fetch para o
+resto.
+
+### `optional = false` se pagou uma terceira vez
+
+O SQL do plano de fetch saiu com `join`, não `left join`:
+
+```sql
+from reserva r1_0
+  join cliente c1_0 on c1_0.id=r1_0.cliente_id
+  join espaco  e1_0 on e1_0.id=r1_0.espaco_id
+```
+
+Como a FK é declarada obrigatória no mapeamento, o Hibernate sabe que nenhuma linha se perde no
+inner join e dispensa o outer. Três benefícios da mesma anotação: o `LAZY` funciona de fato, o
+mapeamento espelha o `NOT NULL`, e o plano de fetch usa inner join.
+
+### Por que a armadilha clássica do `join fetch` não aparece aqui
+
+`join fetch` de **coleção** com paginação faz o Hibernate trazer tudo e paginar em memória
+(`HHH000104`). Não acontece neste repositório porque as associações são to-one e não existe
+`@OneToMany` — decisão do [ADR 0001](adr/0001-relacionamento-unidirecional.md), tomada por outro
+motivo. É a razão pela qual a patologia nº 10 não se aplica.
+
+### O teste falhando foi o que documentou a correção
+
+`ContagemDeQueriesIT` travava a listagem em 52 com igualdade exata. Quando o `@EntityGraph`
+entrou, esse teste quebrou — e atualizá-lo para `1` é o commit que registra a correção. A
+asserção agora é guarda de regressão: se alguém remover o plano de fetch, o número volta a
+crescer com a cardinalidade dos clientes.
+
+O caminho ingênuo continua medido em 52 em `CorrecaoNMaisUmIT`, para o "antes" não virar
+folclore.
 
 **Baseline complementar.** A criação de uma reserva custa **4 queries** (espaço + cliente +
 verificação + insert), fixado antes de a `V2` entrar, para que o custo de um eventual lock
-pessimista apareça como diferença medida e não como impressão.
+pessimista apareça como diferença medida e não como impressão. Não mudou com esta correção.
 
 ---
 

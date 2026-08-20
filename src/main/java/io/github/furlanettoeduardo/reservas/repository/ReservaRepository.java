@@ -2,6 +2,7 @@ package io.github.furlanettoeduardo.reservas.repository;
 
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
 import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
 import org.springframework.data.repository.query.Param;
@@ -48,6 +49,26 @@ public interface ReservaRepository extends ListCrudRepository<Reserva, Long> {
                                @Param("inicio") Instant inicio,
                                @Param("fim") Instant fim);
 
-    /** Tres condicoes, ordem dos argumentos obvia: aqui a derivacao ainda se paga. */
+    /**
+     * Tres condicoes, ordem dos argumentos obvia: aqui a derivacao ainda se paga.
+     *
+     * <p>Sem plano de fetch: as associacoes voltam como proxy. Mantido assim de proposito --
+     * quem so precisa das colunas da propria reserva nao deve pagar dois joins, e
+     * ContagemDeQueriesIT usa este metodo para provar o LazyInitializationException.
+     */
     List<Reserva> findByEspacoIdAndStatusOrderByInicioAsc(Long espacoId, StatusReserva status);
+
+    /**
+     * Mesma consulta, plano de fetch diferente. O texto entre {@code find} e {@code By} e
+     * ignorado pelo derivador, entao serve de documentacao no proprio nome.
+     *
+     * <p>{@code @EntityGraph} em vez de {@code join fetch} escrito na JPQL, por separacao de
+     * responsabilidade: <b>o que selecionar</b> e semantica da consulta, <b>o que carregar
+     * junto</b> e necessidade do caso de uso. Com o graph, a clausula where existe em um lugar
+     * so e cada chamador escolhe seu plano; com join fetch na JPQL, cada plano duplicaria a
+     * condicao -- e condicao duplicada e condicao que sai de sincronia.
+     */
+    @EntityGraph(attributePaths = {"espaco", "cliente"})
+    List<Reserva> findComEspacoEClienteByEspacoIdAndStatusOrderByInicioAsc(
+            Long espacoId, StatusReserva status);
 }

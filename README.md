@@ -121,31 +121,45 @@ A separação é Surefire (`*Tests`) versus Failsafe (`*IT`).
 | Serviço | 7 | 2,7s |
 | Integração / medição | 3 | ~10s |
 
-## Medição: o N+1 da listagem (antes)
+## Medição: o N+1 da listagem, de 52 queries para 1
 
-`GET /espacos/{id}/reservas` com **50 reservas** dispara **52 queries**. Medido com
-`hibernate.generate_statistics` e `Statistics.getPrepareStatementCount()`, não estimado —
-ver `ContagemDeQueriesIT`.
+`GET /espacos/{id}/reservas` com 50 reservas custava **52 queries**. Medido com
+`hibernate.generate_statistics` e `Statistics.getPrepareStatementCount()`, não estimado.
 
 A decomposição importa mais que o número:
 
 | Origem | Queries |
 |---|---|
 | Listagem das reservas | 1 |
-| `Espaco` (o mesmo para as 50 — 49 acertos no cache de 1º nível) | 1 |
+| `Espaco` (o mesmo para as 50, com 49 acertos no cache de 1º nível) | 1 |
 | `Cliente` (50 distintos) | 50 |
 
-**O N+1 escala com a cardinalidade dos alvos distintos, não com o tamanho da lista.** A
-consequência prática é que um benchmark com dados pouco diversos mede o cache, não o N+1: um
-teste com 50 reservas do mesmo cliente concluiria "2 queries" e a produção mostraria o
-contrário. O cenário semeia 50 clientes distintos de propósito.
+**O N+1 escala com a cardinalidade dos alvos distintos, não com o tamanho da lista.** Um
+benchmark com dados pouco diversos mede o cache, não o N+1: um teste com 50 reservas do mesmo
+cliente concluiria "2 queries" e a produção mostraria o contrário. O cenário semeia 50 clientes
+distintos de propósito.
 
-Mesma armadilha uma camada acima: a medição usa `@SpringBootTest` **sem** `@Transactional`.
-Dentro da transação de um `@DataJpaTest`, os 50 clientes já estariam no persistence context e
-a listagem devolveria 1 query — um "antes" falso, contra o qual qualquer correção pareceria
-inútil.
+As três correções, medidas antes de escolher:
 
-Não corrigido de propósito. É a linha de base do Bloco 1B.
+| Abordagem | Queries | Escopo | Elimina? |
+|---|---|---|---|
+| nenhuma | 52 | — | — |
+| `join fetch` na JPQL | **1** | por consulta | sim |
+| `@EntityGraph` | **1** | por consulta | sim |
+| `default_batch_fetch_size = 25` | 4 | global | não, agrupa em lotes |
+
+Adotado o `@EntityGraph`, por separação de responsabilidade: *o que selecionar* é semântica da
+consulta, *o que carregar junto* é necessidade do caso de uso — com o graph a cláusula `where`
+existe num lugar só e cada chamador escolhe seu plano. Custa o mesmo que `join fetch`, e há
+teste comparando as duas contagens para deixar claro que a escolha é de organização de código.
+
+`ContagemDeQueriesIT` trava a listagem em 1 com igualdade exata: se alguém remover o plano de
+fetch, o build quebra. O caminho ingênuo continua medido em 52 em `CorrecaoNMaisUmIT`, para o
+"antes" não virar folclore.
+
+Detalhes em [`docs/jpa-patologias.md`](docs/jpa-patologias.md), incluindo por que o plano de
+fetch saiu com `join` e não `left join`, e por que a armadilha de `join fetch` com paginação não
+aparece aqui.
 
 ## Concorrência: TOCTOU medido e fechado no banco (1B)
 

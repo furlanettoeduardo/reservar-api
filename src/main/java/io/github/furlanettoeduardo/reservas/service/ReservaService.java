@@ -81,12 +81,15 @@ public class ReservaService {
 
     /**
      * Mapeia para DTO <b>dentro</b> da transacao -- e o unico lugar onde os proxies LAZY ainda
-     * inicializam. TODO(1B): e exatamente por isso que o N+1 nasce aqui. Ver a medicao em
-     * ContagemDeQueriesIT antes de corrigir.
+     * inicializam, e por isso o N+1 nascia aqui: 50 reservas custavam 52 queries.
+     *
+     * <p>Corrigido com plano de fetch no repositorio, nao mudando o mapeamento: 1 query.
+     * As tres alternativas medidas estao em CorrecaoNMaisUmIT, e ContagemDeQueriesIT trava o
+     * numero para que a regressao quebre o build.
      */
     @Transactional(readOnly = true)
     public List<ReservaResponse> listarConfirmadasDoEspaco(Long espacoId) {
-        return reservaRepository.findByEspacoIdAndStatusOrderByInicioAsc(
+        return reservaRepository.findComEspacoEClienteByEspacoIdAndStatusOrderByInicioAsc(
                         espacoId, StatusReserva.CONFIRMADA)
                 .stream()
                 .map(ReservaResponse::de)
