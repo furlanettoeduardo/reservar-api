@@ -192,6 +192,10 @@ sobrepostos, e a recusa vindo do banco e não da regra — e apenas registra o m
 > Uma versão anterior assertava `CannotAcquireLockException` e passou três vezes localmente
 > antes de quebrar no CI. Asserção sobre detalhe que o teste não controla é flakiness com outro
 > nome, mesmo quando o teste é determinístico no resto.
+>
+> **Se as ITs só rodassem local, este erro estaria no `main`** e apareceria como "flaky, roda de
+> novo" na primeira máquina diferente. É assim que teste de concorrência quebrado sobrevive
+> anos: não é que ninguém testou, é que o teste era instável e todo mundo aprendeu a ignorar.
 
 O handler captura a família `TransientDataAccessException`, não a subclasse específica. O ramo
 da hierarquia do Spring **é** a informação: `Transient` significa "tentar de novo pode
@@ -237,6 +241,13 @@ quando a exceção atravessa a fronteira transacional depois de algo já ter sid
 
 Os métodos deliberadamente quebrados vivem em `PatologiasTransacionais`, em código de teste —
 produção não carrega isso.
+
+## Patologias medidas
+
+O documento [`docs/jpa-patologias.md`](docs/jpa-patologias.md) reúne cada patologia de JPA,
+Hibernate e transações reproduzida neste repositório — com o mecanismo, o teste que a prova, o
+número medido, e a correção ou o motivo de não haver uma. Inclui dois padrões sobre como
+correções falham: mover a falha para outra camada e mover a falha para outro ambiente.
 
 ## Decisões de arquitetura
 
