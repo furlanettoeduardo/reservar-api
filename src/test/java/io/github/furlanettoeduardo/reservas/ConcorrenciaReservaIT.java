@@ -18,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -54,11 +55,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * mudou e que passou a existir algo segurando a linha. A regra virou caminho rapido com
  * mensagem boa; a EXCLUDE constraint da V2 e a garantia.
  *
- * <p><b>E o banco recusa de duas formas diferentes conforme o escalonamento.</b> Uma versao
- * anterior deste teste cobria as duas num caso so e era flaky -- passou e falhou com o mesmo
- * codigo, porque qual das duas ocorre depende de quem chega primeiro ao INSERT. Cada caminho
- * agora tem seu teste, forcado a acontecer. Os dois importam: chegam ao
- * {@code ApiExceptionHandler} como excecoes de familias distintas.
+ * <p><b>E o banco recusa de duas formas diferentes conforme o escalonamento</b> -- uma
+ * forcavel, a outra nao:
+ *
+ * <ul>
+ *   <li><b>Escalonadas</b> (uma commita antes de a outra gravar): {@code exclusion_violation},
+ *       {@link DataIntegrityViolationException}. Forcavel com um latch, e o teste forca.
+ *   <li><b>Simultaneas</b>: pode dar deadlock ({@link CannotAcquireLockException}) ou
+ *       {@code exclusion_violation}, e <b>nao da para escolher</b>. O deadlock exige que os
+ *       dois INSERTs gravem a tupla antes de qualquer um dos dois checar a exclusao -- e essa
+ *       janela e interna ao Postgres, invisivel e inalcancavel do cliente. Local deu deadlock
+ *       tres vezes seguidas; o runner do CI, com menos nucleos, deu violacao.
+ * </ul>
+ *
+ * <p>Por isso o teste das simultaneas assere o <b>invariante</b>, que e deterministico (uma
+ * recusada, uma confirmada, zero pares), e apenas registra qual mecanismo ocorreu. Uma versao
+ * anterior assertava {@code CannotAcquireLockException} e passou tres vezes local antes de
+ * quebrar no CI: assercao sobre detalhe que o teste nao controla e flakiness com outro nome.
+ * Os dois mecanismos sao tratados em {@code ApiExceptionHandler}, e la a cobertura e
+ * deterministica porque a excecao vem de mock.
  *
  * <p>O cruzamento e forcado por gancho, nao por sorte. O gancho mora num proxy dinamico que
  * embrulha o repositorio, e nao num spy do Mockito: motivo medido, nao teorico --
@@ -176,15 +191,12 @@ class ConcorrenciaReservaIT {
     }
 
     /**
-     * As duas gravam ao mesmo tempo. Cada INSERT insere a tupla e so entao checa a exclusao,
-     * entao cada transacao encontra a tupla nao-commitada da outra e espera por ela: espera
-     * mutua. O Postgres detecta o deadlock e mata uma -- o que chega como
-     * {@link CannotAcquireLockException}, e nao como violacao de integridade.
-     *
-     * <p>Qual das duas morre e escolha do Postgres, entao o teste nao assume nenhuma.
+     * As duas gravam ao mesmo tempo. O que o teste garante e o invariante; qual erro o
+     * Postgres escolhe depende de temporizacao interna e nao e assertado -- ver a nota na
+     * documentacao da classe.
      */
     @Test
-    void simultaneasProduzemDeadlock() throws Exception {
+    void simultaneasSaoRecusadasPeloBanco() throws Exception {
         CyclicBarrier ambasVerificaram = new CyclicBarrier(2);
         Runnable esperarAOutra = () -> aguardar(ambasVerificaram);
 
@@ -196,9 +208,11 @@ class ConcorrenciaReservaIT {
 
         assertThat(rejeicoes).hasSize(1);
         assertThat(rejeicoes.getFirst())
-                .as("nao e ConflitoDeReservaException: as duas passaram na verificacao, entao "
-                        + "quem recusou foi o banco -- e recusou por deadlock, nao por violacao")
-                .isInstanceOf(CannotAcquireLockException.class);
+                .as("quem recusou foi o BANCO, nao a regra: as duas passaram na verificacao, "
+                        + "entao um ConflitoDeReservaException aqui significaria que a corrida "
+                        + "nao aconteceu. Qual DataAccessException chega -- deadlock ou "
+                        + "violacao -- nao esta sob controle do teste e nao e assertado.")
+                .isInstanceOf(DataAccessException.class);
         assertThat(confirmadas()).isEqualTo(1);
         assertThat(paresSobrepostosConfirmados())
                 .as("o estado invalido que este mesmo teste gravava antes da V2")

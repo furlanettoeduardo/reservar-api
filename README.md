@@ -172,22 +172,36 @@ rápido — devolve `409` com mensagem útil no caso comum, sem tocar o banco du
 constraint é a garantia, e vale também para import manual, script de carga ou um segundo
 serviço, que nenhum lock em Java alcançaria.
 
-### O banco recusa de duas formas, e as duas importam
+### O banco recusa de duas formas, e só uma é forçável
 
-| Escalonamento | Erro do Postgres | Exceção | `detectadoPor` |
-|---|---|---|---|
-| Uma commita antes de a outra gravar | `exclusion_violation` | `DataIntegrityViolationException` | `constraint` |
-| As duas gravam ao mesmo tempo | `deadlock detected` | `CannotAcquireLockException` | `deadlock` |
+| Escalonamento | Erro do Postgres | Exceção | Ramo | `detectadoPor` |
+|---|---|---|---|---|
+| Uma commita antes de a outra gravar | `exclusion_violation` | `DataIntegrityViolationException` | **Non**Transient | `constraint` |
+| As duas gravam ao mesmo tempo | `deadlock detected` **ou** `exclusion_violation` | `CannotAcquireLockException` ou a de cima | Transient ou não | `deadlock` ou `constraint` |
 
 O deadlock acontece porque cada `INSERT` grava a tupla e **depois** checa a exclusão: cada
-transação encontra a tupla não-commitada da outra e espera por ela. `CannotAcquireLockException`
-não é subclasse de `DataIntegrityViolationException` — sem handler próprio, esse caminho
-devolveria `500`. Um teste que cobrisse os dois casos num só seria flaky, porque qual deles
-ocorre depende de quem chega primeiro ao `INSERT`; cada um tem o seu, forçado a acontecer.
+transação encontra a tupla não-commitada da outra e espera por ela. É diferente de `UNIQUE` em
+B-tree, onde o segundo insert bloqueia sem gravar e sai com violação limpa.
 
-Retry automático no serviço para o caso retentável é candidato registrado e não implementado:
-ele mascararia a medição da janela de corrida, que é a razão entre os contadores de
-`detectadoPor`.
+**Qual dos dois ocorre não é controlável.** O deadlock exige que ambos os `INSERT`s gravem a
+tupla antes de qualquer um checar a exclusão, e essa janela é interna ao Postgres. A mesma
+suíte deu deadlock três vezes seguidas em uma máquina e violação no runner do CI. Por isso
+`ConcorrenciaReservaIT` assere o **invariante** — uma recusada, uma confirmada, zero pares
+sobrepostos, e a recusa vindo do banco e não da regra — e apenas registra o mecanismo.
+
+> Uma versão anterior assertava `CannotAcquireLockException` e passou três vezes localmente
+> antes de quebrar no CI. Asserção sobre detalhe que o teste não controla é flakiness com outro
+> nome, mesmo quando o teste é determinístico no resto.
+
+O handler captura a família `TransientDataAccessException`, não a subclasse específica. O ramo
+da hierarquia do Spring **é** a informação: `Transient` significa "tentar de novo pode
+funcionar" — e é o irmão de `NonTransientDataAccessException`, onde mora
+`DataIntegrityViolationException`. As duas descendem de `DataAccessException` por caminhos
+diferentes, então sem handler próprio o deadlock viraria `500`. Capturar a família cobre também
+timeout de lock e falha de serialização, que produzem o mesmo `409` retentável.
+
+Retry automático no serviço é candidato registrado e não implementado: mascararia a razão entre
+os contadores de `detectadoPor`, que é a medida da janela de corrida.
 
 ## Armadilhas de `@Transactional`, verificadas em teste
 

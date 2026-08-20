@@ -2,8 +2,8 @@ package io.github.furlanettoeduardo.reservas.web;
 
 import io.github.furlanettoeduardo.reservas.service.ConflitoDeReservaException;
 import io.github.furlanettoeduardo.reservas.service.RecursoNaoEncontradoException;
-import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -56,20 +56,27 @@ public class ApiExceptionHandler {
 
     /**
      * Terceira forma de o mesmo conflito chegar, e a que so apareceu depois da V2 ir para o
-     * banco: quando as duas transacoes gravam ao mesmo tempo, cada INSERT insere a tupla e so
+     * banco: quando as duas transacoes gravam ao mesmo tempo, cada INSERT grava a tupla e so
      * entao checa a exclusao, encontra a tupla nao-commitada da outra e espera por ela. Espera
-     * mutua, deadlock, e o Postgres mata uma -- o que chega como CannotAcquireLockException,
-     * que <b>nao</b> e subclasse de DataIntegrityViolationException e sem este handler viraria
-     * 500.
+     * mutua, deadlock, e o Postgres mata uma.
      *
-     * <p>409 e nao 500 porque a causa e conflito real de reserva, nao falha do servidor.
-     * Diferente das outras duas, esta e retentavel: a transacao morta nao chegou a gravar
-     * nada, e uma segunda tentativa ou consegue o horario ou recebe um 409 honesto pela regra.
-     * Retry automatico no servico e candidato registrado, nao implementado -- ele mascararia a
-     * medicao da janela de corrida.
+     * <p>Captura a familia {@code TransientDataAccessException} e nao a
+     * {@code CannotAcquireLockException} especifica. O ramo da hierarquia do Spring <b>e</b> a
+     * informacao: transient significa "tentar de novo pode funcionar", e o irmao
+     * {@code NonTransientDataAccessException} -- onde mora DataIntegrityViolationException --
+     * significa o contrario. Capturar a familia cobre tambem timeout de lock e falha de
+     * serializacao, que produzem o mesmo 409 retentavel. Qual membro chega depende de
+     * temporizacao: o mesmo cenario deu deadlock na maquina local e violacao no runner do CI.
+     *
+     * <p>409 e nao 500 porque a causa e conflito real de reserva, nao falha do servidor. Sem
+     * este handler seria 500, porque TransientDataAccessException nao descende de
+     * DataIntegrityViolationException -- as duas sao DataAccessException por ramos diferentes.
+     *
+     * <p>Retry automatico no servico e candidato registrado, nao implementado: ele mascararia
+     * a razao entre os contadores de detectadoPor, que e a medida da janela de corrida.
      */
-    @ExceptionHandler(CannotAcquireLockException.class)
-    public ProblemDetail conflitoConcorrente(CannotAcquireLockException e) {
+    @ExceptionHandler(TransientDataAccessException.class)
+    public ProblemDetail conflitoConcorrente(TransientDataAccessException e) {
         ProblemDetail problema = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
                 "a operacao foi abortada por contencao concorrente; tentar de novo pode resolver");
         problema.setTitle("Conflito concorrente");
