@@ -221,6 +221,30 @@ timeout de lock e falha de serialização, que produzem o mesmo `409` retentáve
 Retry automático no serviço é candidato registrado e não implementado: mascararia a razão entre
 os contadores de `detectadoPor`, que é a medida da janela de corrida.
 
+## Índices: o B-tree não ficou redundante depois da `EXCLUDE`
+
+A `EXCLUDE` da `V2` criou um índice GiST que aparentemente cobre a mesma consulta que
+`idx_reserva_espaco_periodo`. Medido com 40.000 reservas em 200 espaços, `ANALYZE` antes:
+
+| Predicado | Índices | Plano | Tempo | Buffers |
+|---|---|---|---|---|
+| escalar | B-tree + GiST | **Index Scan** | **0,204 ms** | **15** |
+| escalar | só GiST | Seq Scan | 2,623 ms | 455 |
+| intervalo (`&&`) | só GiST | Bitmap Heap Scan | 3,605 ms | 406 |
+| escalar | nenhum | Seq Scan | 2,065 ms | 455 |
+
+O GiST indexa a **expressão** `tstzrange(inicio, fim, '[)')`, e a consulta da regra usa
+comparação escalar — que não casa com índice de expressão. Sem o B-tree, o planejador cai em Seq
+Scan com o mesmo custo de não haver índice algum.
+
+Reescrever o predicado como intervalo faz o GiST ser usado e fica **mais lento**: ele aplica só a
+parte de intervalo, devolve 400 candidatos de todos os espaços e descarta 398 no heap. O B-tree
+`(espaco_id, inicio, fim)` vai direto às 2 linhas.
+
+Os dois índices ficam, com papéis distintos: o B-tree serve a leitura do caminho quente, o GiST
+existe para a `EXCLUDE` funcionar. Detalhes e os planos completos em
+[`docs/jpa-patologias.md`](docs/jpa-patologias.md).
+
 ## Armadilhas de `@Transactional`, verificadas em teste
 
 `TransacaoIT` executa as duas patologias clássicas contra Postgres real. Cada uma tem um par

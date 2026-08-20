@@ -34,7 +34,7 @@ mesma origem.
 | 6 | TOCTOU na verificação de sobreposição | provada e fechada no banco | `ConcorrenciaReservaIT` + `V2` |
 | — | Ordem de flush do Hibernate | descoberta acidental | `ContagemDeQueriesIT` (comentário) |
 | 7 | Entidade em `HashSet` com proxy | pendente | — |
-| 9 | Índice e plano de execução | pendente | — |
+| 9 | Índice e plano de execução | medida — B-tree **não** é redundante | `PlanoDeExecucaoIT` |
 | 10 | Paginação com `JOIN FETCH` de coleção | **não se aplica** | não há coleção — [ADR 0001](adr/0001-relacionamento-unidirecional.md) |
 
 ---
@@ -294,6 +294,84 @@ gravação mora num `Proxy.newProxyInstance` sobre a interface do repositório, 
 > Vale para qualquer spy, proxy de logging ou coletor de métricas inserido num teste de corrida.
 > E a variante silenciosa é pior: um mock que serializa sem dar timeout transforma teste de
 > corrida em teste sequencial que passa.
+
+---
+
+## 9. Índice e plano de execução — o B-tree não é redundante
+
+O experimento não é "criar o índice e medir": `idx_reserva_espaco_periodo` existe desde a `V1`, e
+criar-e-medir exigiria fingir que ele não estava lá. É **remover e medir**.
+
+E a pergunta ficou melhor depois da `V2`: a `EXCLUDE` criou um índice GiST sobre
+`(espaco_id, tstzrange(inicio, fim, '[)'))`, que aparentemente cobre a mesma consulta. Então —
+**o B-tree ainda se paga, ou é índice redundante ocupando espaço e custando escrita em cada
+`INSERT`?**
+
+40.000 reservas em 200 espaços, `ANALYZE` antes de medir. Com 50 linhas o planejador escolheria
+Seq Scan de qualquer jeito, porque a tabela cabe em poucas páginas.
+
+| Predicado | Índices disponíveis | Plano | Tempo | Buffers | Linhas descartadas |
+|---|---|---|---|---|---|
+| escalar | B-tree + GiST | **Index Scan** no B-tree | **0,204 ms** | **15** | 0 |
+| escalar | só GiST | Seq Scan | 2,623 ms | 455 | 39.998 |
+| intervalo (`&&`) | só GiST | Bitmap Heap Scan no GiST | 3,605 ms | 406 | 398 |
+| escalar | nenhum | Seq Scan | 2,065 ms | 455 | 39.998 |
+
+**Resposta: o B-tree se paga, com folga — 10× mais rápido e 30× menos buffers.** A hipótese da
+redundância está errada, e o motivo é o que interessa.
+
+### Por que o GiST não serviu para o predicado escalar
+
+O índice da `EXCLUDE` indexa uma **expressão**, `tstzrange(inicio, fim, '[)')`. A consulta da
+regra de sobreposição usa comparação escalar — `inicio < :fim and fim > :inicio` — e comparação
+escalar não casa com índice de expressão. O planejador nem considerou o GiST: caiu em Seq Scan,
+com o mesmo custo de não haver índice nenhum (2,623 vs 2,065 ms, dentro do ruído).
+
+> **Índice de expressão só serve predicado escrito naquela expressão.** Ter o índice não basta;
+> a consulta precisa mencioná-lo.
+
+### E quando a consulta é reescrita para casar com o índice
+
+Reescrevendo o predicado como sobreposição de intervalo, o GiST passa a ser usado — e fica
+**mais lento que o Seq Scan**. O plano diz por quê:
+
+```
+Bitmap Index Scan on reserva_sem_sobreposicao
+  Index Cond: (tstzrange(inicio, fim, '[)') && '[...]'::tstzrange)
+  rows=400
+Bitmap Heap Scan
+  Filter: (espaco_id = 1)
+  Rows Removed by Filter: 398
+```
+
+O GiST usou **só a parte de intervalo**, não o `espaco_id = 1`. Devolveu 400 candidatos — todas
+as reservas que cruzam aquela janela de 2h, em todos os 200 espaços — e descartou 398 no heap.
+Leu 400 linhas para devolver 2.
+
+O B-tree `(espaco_id, inicio, fim)` vai direto às 2 linhas, porque a igualdade em `espaco_id` é o
+primeiro termo e é altamente seletiva: 1 espaço entre 200. É exatamente o caso em que B-tree
+composto ganha de GiST multicoluna.
+
+### Conclusão prática
+
+Manter os dois índices, e não por inércia:
+
+- O **B-tree** serve a consulta da regra, que é o caminho quente de toda criação de reserva.
+- O **GiST** existe para a `EXCLUDE` funcionar, não para acelerar leitura. É o preço da garantia
+  de integridade, e o experimento mostra que ele não substitui o outro.
+
+Reescrever a JPQL para usar `&&` e dispensar o B-tree seria pior em desempenho **e** exigiria
+query nativa, porque JPQL não expressa `tstzrange(...) &&` sem função customizada do Hibernate.
+Duas razões independentes para não fazer.
+
+### Nota de método
+
+A única asserção sobre forma de plano é que **sem índice nenhum o plano é Seq Scan** — aí o
+planejador não tem alternativa, e isso o teste controla. As outras três formas são escolha dele:
+ficam registradas no log e não assertadas. Mesma regra 3 que corrigiu o teste de concorrência.
+
+O teste derruba objetos de schema que os outros ITs dependem, e o container é compartilhado —
+então é um método só, com restauração em `finally`.
 
 ---
 
