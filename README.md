@@ -2,9 +2,23 @@
 
 [![CI](https://github.com/furlanettoeduardo/reservar-api/actions/workflows/ci.yml/badge.svg)](https://github.com/furlanettoeduardo/reservar-api/actions/workflows/ci.yml)
 
-API de locação de espaços para eventos. O problema central é evitar reserva dupla: duas
-pessoas não podem ocupar o mesmo espaço em períodos que se sobrepõem — e detectar isso
-corretamente envolve semântica de intervalo, concorrência e integridade no banco.
+API de locação de espaços para eventos. O problema central é evitar reserva dupla: duas pessoas
+não podem ocupar o mesmo espaço em períodos que se sobrepõem — e detectar isso corretamente
+envolve semântica de intervalo, concorrência e integridade no banco.
+
+![Criando uma reserva que conflita e recebendo 409](docs/imagens/reservar-conflito-409.gif)
+
+**Três números que resumem o que este repositório mede:**
+
+- **52 → 1 query** na listagem de reservas, com as três correções de N+1 comparadas antes de
+  escolher uma ([detalhes](docs/jpa-patologias.md#1-n1-na-listagem--52-queries-viraram-1))
+- **TOCTOU reproduzido e fechado no banco** — duas transações concorrentes gravavam períodos
+  sobrepostos; uma `EXCLUDE` constraint com `tstzrange` fechou a janela
+- **0,204 ms contra 2,6 ms** — o índice B-tree medido contra o GiST da constraint, com
+  `EXPLAIN ANALYZE` sobre 40.000 linhas
+
+Nove patologias de JPA, Hibernate e transações reproduzidas em teste executável e documentadas
+em [`docs/jpa-patologias.md`](docs/jpa-patologias.md).
 
 ## Modelo
 
@@ -54,16 +68,14 @@ A aplicação sobe em `http://localhost:8080`. O Flyway aplica as migrations na 
 - Swagger UI — <http://localhost:8080/swagger-ui.html>
 - Health — <http://localhost:8080/actuator/health>
 
-### Limitação: não há API para espaços e clientes
+### Limitação: espaços e clientes são somente leitura
 
-O 1A entrega apenas os endpoints de reserva. Criar espaço e cliente exige SQL direto — não
-existe `POST /espacos` nem `POST /clientes`, e sem eles nenhuma requisição de reserva chega a
-um `201`. É escopo deixado de fora conscientemente, não esquecimento: o objetivo do bloco era
-a regra de sobreposição, não CRUD.
+Existem `GET /espacos` e `GET /clientes`, para a tela popular os selects e para quem usa a API
+descobrir ids válidos. Não existe `POST` para nenhum dos dois: é escopo deixado de fora
+conscientemente, não esquecimento — o objetivo do projeto é a regra de sobreposição, não CRUD.
 
-Consequência prática, para quem clonar: o passo abaixo é obrigatório antes do primeiro
-`curl`. Resolver isso de verdade (dados de exemplo por perfil `dev`, de modo que
-`docker compose up` já entregue um sistema navegável) está previsto para o 1C.
+Para ter o que reservar, suba com o perfil `dev`, que semeia dados de exemplo. Se preferir
+semear à mão:
 
 ```bash
 docker exec -i reservar-db psql -U reservas -d reservas <<'SQL'
@@ -88,10 +100,39 @@ Para derrubar tudo, incluindo o volume de dados:
 docker compose down -v
 ```
 
+## A tela
+
+Uma tela: listar as reservas de um espaço e criar uma nova. Sem login, sem rotas, sem design
+system — ela existe para mostrar a regra de negócio funcionando, não para ser um frontend.
+
+```bash
+docker compose up -d
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev   # semeia dados de exemplo
+
+cd frontend && npm install && npm run dev               # http://localhost:5173
+```
+
+O perfil `dev` faz três coisas: liga o log de SQL, libera CORS para `localhost:5173` (origem
+exata, não coringa) e semeia três espaços, três clientes e três reservas na primeira subida. É o
+que resolve a limitação que o smoke test do 1A expôs — sem dados e sem endpoint de catálogo,
+ninguém chegava a um `201`.
+
+O que o GIF mostra é o caminho interessante: pedir um horário ocupado devolve `409` com o
+`ProblemDetail` da RFC 9457, incluindo `detectadoPor: "regra"` — que distingue "a verificação da
+aplicação barrou" de "o banco barrou". Trocar o horário por um livre devolve `201` com o valor
+calculado pelo domínio.
+
+Um detalhe que só apareceu olhando a tela: a tabela formata os horários no fuso do navegador e a
+mensagem de erro vinha em UTC, então o usuário lia `11:00 - 13:00` na lista e `14:00:00Z` no
+erro. A correção foi o servidor mandar o período em campos estruturados no `ProblemDetail`, e o
+cliente formatar — a mensagem continua lá para quem consome a API sem interface.
+
 ## Endpoints
 
 | Método | Rota | Resposta |
 |---|---|---|
+| `GET` | `/espacos` | `200` com o catálogo de espaços |
+| `GET` | `/clientes` | `200` com o catálogo de clientes |
 | `POST` | `/reservas` | `201` + `Location`, ou `409` em conflito |
 | `GET` | `/espacos/{espacoId}/reservas` | `200` com as reservas confirmadas |
 | `POST` | `/reservas/{id}/cancelamento` | `204` |

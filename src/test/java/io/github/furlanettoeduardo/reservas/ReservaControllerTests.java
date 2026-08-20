@@ -107,6 +107,9 @@ class ReservaControllerTests {
                 .andExpect(jsonPath("$.title").value("Conflito de reserva"))
                 .andExpect(jsonPath("$.type").value("urn:reservar:conflito-de-regra"))
                 .andExpect(jsonPath("$.detectadoPor").value("regra"))
+                .andExpect(jsonPath("$.espacoId").value(1))
+                .andExpect(jsonPath("$.inicio").value(INICIO.toString()))
+                .andExpect(jsonPath("$.fim").value(FIM.toString()))
                 .andExpect(jsonPath("$.stackTrace").doesNotExist());
     }
 

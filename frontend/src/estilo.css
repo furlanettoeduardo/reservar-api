@@ -1,0 +1,189 @@
+/* Um arquivo, sem design system. O objetivo e legibilidade, nao identidade visual. */
+
+:root {
+  --tinta: #1a1d21;
+  --tinta-fraca: #6b7280;
+  --linha: #e4e7eb;
+  --fundo: #fbfbfc;
+  --acento: #1f5f8b;
+  --erro: #b3261e;
+  --erro-fundo: #fdf0ef;
+  --ok: #1b6b46;
+  --ok-fundo: #eff7f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--fundo);
+  color: var(--tinta);
+  font: 15px/1.55 system-ui, -apple-system, Segoe UI, sans-serif;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+header {
+  border-bottom: 1px solid var(--linha);
+  padding-bottom: 1.25rem;
+  margin-bottom: 2rem;
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+
+header p {
+  margin: 0;
+  color: var(--tinta-fraca);
+}
+
+section {
+  margin-bottom: 2.5rem;
+}
+
+h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tinta-fraca);
+  margin: 0 0 0.9rem;
+}
+
+form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  align-items: end;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--tinta-fraca);
+}
+
+select,
+input {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--linha);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--tinta);
+}
+
+select:focus,
+input:focus {
+  outline: 2px solid var(--acento);
+  outline-offset: -1px;
+}
+
+button {
+  font: inherit;
+  padding: 0.55rem 1.1rem;
+  border: 0;
+  border-radius: 6px;
+  background: var(--acento);
+  color: #fff;
+  cursor: pointer;
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+button.link {
+  background: none;
+  color: var(--tinta-fraca);
+  padding: 0;
+  text-decoration: underline;
+  grid-column: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid var(--linha);
+}
+
+th {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tinta-fraca);
+  font-weight: 600;
+}
+
+td:first-child {
+  color: var(--tinta-fraca);
+  font-variant-numeric: tabular-nums;
+}
+
+.estado {
+  color: var(--tinta-fraca);
+}
+
+.erro,
+.ok {
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 6px;
+  border: 1px solid;
+}
+
+.erro {
+  border-color: var(--erro);
+  background: var(--erro-fundo);
+  color: var(--erro);
+}
+
+.ok {
+  border-color: var(--ok);
+  background: var(--ok-fundo);
+  color: var(--ok);
+}
+
+.erro p,
+.erro ul {
+  margin: 0.4rem 0 0;
+}
+
+.erro ul {
+  padding-left: 1.2rem;
+}
+
+.detalhe {
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+@media (max-width: 34rem) {
+  form {
+    grid-template-columns: 1fr;
+  }
+}

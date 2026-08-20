@@ -33,6 +33,9 @@ public class ApiExceptionHandler {
         problema.setTitle("Conflito de reserva");
         problema.setType(TIPO_CONFLITO_DE_REGRA);
         problema.setProperty("detectadoPor", "regra");
+        problema.setProperty("espacoId", e.getEspacoId());
+        problema.setProperty("inicio", e.getInicio());
+        problema.setProperty("fim", e.getFim());
         return problema;
     }
 
