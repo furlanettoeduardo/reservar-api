@@ -1,116 +1,76 @@
 package io.github.furlanettoeduardo.reservas.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.FetchType;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
-import jakarta.persistence.Table;
-import jakarta.persistence.Version;
-import org.hibernate.annotations.Generated;
-import org.hibernate.generator.EventType;
-
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Objects;
 
 /**
- * Reserva de um espaco por um cliente num periodo. Mapeia a tabela {@code reserva}.
+ * Reserva de um espaco por um cliente num periodo. Sem framework.
  *
- * <p>Relacionamentos <b>unidirecionais</b>: nem {@link Espaco} nem {@link Cliente} tem a
- * colecao inversa. Ver a nota em {@link #espaco}.
+ * <p><b>Aqui esta a decisao mais consequente da refatoracao.</b> Antes, {@code cancelar()}
+ * mudava o objeto e o Hibernate emitia o UPDATE sozinho, por dirty checking -- o servico nao
+ * chamava {@code save()}. Isso funcionava porque o objeto que o dominio mudava <b>era</b> o
+ * objeto que o Hibernate observava.
  *
- * <p>{@code @Version} entrou na V3, depois de a falha de concorrencia ser medida -- primeiro o
- * TOCTOU da verificacao de sobreposicao, fechado pela EXCLUDE constraint da V2, e depois o lost
- * update do UPDATE cego, em AtualizacaoPerdidaIT. Adiciona-lo antes teria mascarado as duas
- * evidencias.
+ * <p>Com a separacao, nao e mais. Mudar esta classe nao produz UPDATE nenhum, porque nada
+ * observa este objeto. Duas saidas eram possiveis:
+ *
+ * <ol>
+ *   <li>Manter mutabilidade e o adaptador detectar o que mudou -- ou seja, recriar em Java o
+ *       dirty checking que o Hibernate ja faz.
+ *   <li><b>Tornar o dominio imutavel</b> e o servico gravar explicitamente: {@code cancelar()}
+ *       devolve uma reserva nova, e {@code reservas.salvar(...)} e o que persiste.
+ * </ol>
+ *
+ * <p>Escolhida a segunda. Perde-se conveniencia -- uma chamada a mais no servico. Ganha-se que
+ * <b>a gravacao fica visivel no codigo</b>: a patologia n.3 do 1B, o update fantasma, deixa de
+ * ser possivel por construcao, porque nao existe mais o caminho em que alterar um objeto grava
+ * no banco sem ninguem escrever isso.
+ *
+ * <p>O lado desconfortavel esta no ADR 0004: sem dirty checking, o adaptador grava todas as
+ * colunas sempre, sem saber quais mudaram. O Hibernate tambem fazia isso -- o UPDATE cego da
+ * mesma patologia n.3 -- entao na pratica nao piorou. Mas agora e escolha nossa, e nao mais um
+ * default herdado que dava para trocar com {@code @DynamicUpdate}.
  */
-@Entity
-@Table(name = "reserva")
-public class Reserva {
+public final class Reserva {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private final Long id;
+    private final Espaco espaco;
+    private final Cliente cliente;
+    private final Periodo periodo;
+    private final StatusReserva status;
+    private final BigDecimal valorTotal;
+    private final Instant criadoEm;
 
-    /**
-     * LAZY explicito: o default de {@code @ManyToOne} e EAGER, que faz todo carregamento de
-     * reserva trazer o espaco junto num join, mesmo quando ninguem vai olhar para ele.
-     *
-     * <p>{@code optional = false} espelha o NOT NULL da FK e permite ao Hibernate devolver um
-     * proxy sem checar existencia no banco -- sem isso, o LAZY em to-one degrada para EAGER,
-     * porque ele precisaria consultar a linha so para saber se deve devolver null.
-     *
-     * <p>Sem {@code @OneToMany} do outro lado: uma colecao em Espaco significa que carregar um
-     * espaco pode carregar todas as reservas dele, sem paginacao e crescendo para sempre.
-     * Quem precisa das reservas de um espaco quer um recorte ("as do mes que vem", "as que
-     * conflitam com este periodo"), e isso e uma query no repositorio, nao um campo.
-     */
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "espaco_id", nullable = false)
-    private Espaco espaco;
-
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "cliente_id", nullable = false)
-    private Cliente cliente;
-
-    @Column(name = "inicio", nullable = false)
-    private Instant inicio;
-
-    @Column(name = "fim", nullable = false)
-    private Instant fim;
-
-    /** STRING, nunca ORDINAL. A migration declarou VARCHAR(20), entao so STRING valida. */
-    @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 20)
-    private StatusReserva status;
-
-    @Column(name = "valor_total", nullable = false, precision = 19, scale = 4)
-    private BigDecimal valorTotal;
-
-    @Generated(event = EventType.INSERT)
-    @Column(name = "criado_em", nullable = false, updatable = false)
-    private Instant criadoEm;
-
-    /**
-     * Lock otimista. Com ele o UPDATE ganha {@code and versao = ?}, entao a segunda transacao a
-     * commitar afeta 0 linhas e o Hibernate lanca OptimisticLockException -- em vez de
-     * sobrescrever em silencio o campo que a outra alterou.
-     *
-     * <p>Nao tem setter: quem controla e o Hibernate. Entrou na V3, depois de o lost update ser
-     * medido, porque adicionar antes teria escondido a evidencia.
-     */
-    @Version
-    @Column(name = "versao", nullable = false)
-    private Long versao;
-
-    protected Reserva() {
-    }
-
-    private Reserva(Espaco espaco, Cliente cliente, Periodo periodo, BigDecimal valorTotal) {
+    public Reserva(Long id, Espaco espaco, Cliente cliente, Periodo periodo,
+                   StatusReserva status, BigDecimal valorTotal, Instant criadoEm) {
+        this.id = id;
         this.espaco = espaco;
         this.cliente = cliente;
-        this.inicio = periodo.inicio();
-        this.fim = periodo.fim();
+        this.periodo = periodo;
+        this.status = status;
         this.valorTotal = valorTotal;
-        this.status = StatusReserva.CONFIRMADA;
+        this.criadoEm = criadoEm;
     }
 
     /**
-     * Unica porta de entrada. O construtor e privado porque {@code valorTotal} e <b>derivado</b>
-     * de espaco + periodo -- se ele fosse parametro, existiria caminho para gravar uma reserva
-     * com valor que nao corresponde a tarifa, e nenhuma constraint do banco pegaria isso.
+     * Unica porta de entrada para reserva nova. {@code valorTotal} e <b>derivado</b> de espaco e
+     * periodo -- se fosse parametro, existiria caminho para gravar uma reserva com valor que nao
+     * corresponde a tarifa, e nenhuma constraint do banco pegaria isso.
      */
     public static Reserva nova(Espaco espaco, Cliente cliente, Periodo periodo) {
-        return new Reserva(espaco, cliente, periodo, espaco.calcularValor(periodo));
+        return new Reserva(null, espaco, cliente, periodo, StatusReserva.CONFIRMADA,
+                espaco.calcularValor(periodo), null);
     }
 
-    public void cancelar() {
-        this.status = StatusReserva.CANCELADA;
+    /** Devolve uma reserva cancelada. Quem persiste e o servico, chamando salvar(). */
+    public Reserva cancelar() {
+        return new Reserva(id, espaco, cliente, periodo, StatusReserva.CANCELADA, valorTotal,
+                criadoEm);
+    }
+
+    public boolean estaConfirmada() {
+        return status == StatusReserva.CONFIRMADA;
     }
 
     public Long getId() {
@@ -126,15 +86,15 @@ public class Reserva {
     }
 
     public Periodo getPeriodo() {
-        return new Periodo(inicio, fim);
+        return periodo;
     }
 
     public Instant getInicio() {
-        return inicio;
+        return periodo.inicio();
     }
 
     public Instant getFim() {
-        return fim;
+        return periodo.fim();
     }
 
     public StatusReserva getStatus() {
@@ -154,21 +114,31 @@ public class Reserva {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof Reserva outra)) {
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        return id != null && id.equals(outra.getId());
+        Reserva outra = (Reserva) o;
+        return Objects.equals(id, outra.id)
+                && Objects.equals(espaco, outra.espaco)
+                && Objects.equals(cliente, outra.cliente)
+                && Objects.equals(periodo, outra.periodo)
+                && status == outra.status
+                && valorTotal.compareTo(outra.valorTotal) == 0;
     }
 
     @Override
     public int hashCode() {
-        return Reserva.class.hashCode();
+        return Objects.hash(id, espaco, cliente, periodo, status,
+                valorTotal == null ? null : valorTotal.stripTrailingZeros());
     }
 
-    /** Nao toca em espaco/cliente: getter de proxy dispara SELECT, e toString em log e comum. */
+    /**
+     * Agora pode tocar espaco e cliente sem risco: nao ha proxy, entao nao ha SELECT escondido
+     * dentro de um {@code log.info}. Era a armadilha que forcava este toString a omiti-los.
+     */
     @Override
     public String toString() {
-        return "Reserva{id=%d, inicio=%s, fim=%s, status=%s, valorTotal=%s}"
-                .formatted(id, inicio, fim, status, valorTotal);
+        return "Reserva{id=%d, espaco='%s', cliente='%s', periodo=%s, status=%s, valorTotal=%s}"
+                .formatted(id, espaco.getNome(), cliente.getNome(), periodo, status, valorTotal);
     }
 }

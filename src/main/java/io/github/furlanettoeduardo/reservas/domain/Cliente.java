@@ -1,47 +1,28 @@
 package io.github.furlanettoeduardo.reservas.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
-import org.hibernate.annotations.Generated;
-import org.hibernate.generator.EventType;
-
 import java.time.Instant;
+import java.util.Objects;
 
 /**
- * Cliente que faz reservas. Mapeia a tabela {@code cliente}.
- *
- * <p>Mesmas decisoes da {@link Espaco}: classe mutavel nao-final para dirty checking e proxy,
- * construtor sem-args protected para o Hibernate, {@code criado_em} gerado pelo banco.
+ * Cliente que faz reservas. Sem framework, como {@link Espaco} -- o mapeamento vive em
+ * {@code repository.jpa.ClienteJpa}.
  */
-@Entity
-@Table(name = "cliente")
-public class Cliente {
+public final class Cliente {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private final Long id;
+    private final String nome;
+    private final String email;
+    private final Instant criadoEm;
 
-    @Column(name = "nome", nullable = false, length = 150)
-    private String nome;
-
-    /** {@code unique = true} e documentacao: quem gera o DDL e a migration, nao o Hibernate. */
-    @Column(name = "email", nullable = false, length = 255, unique = true)
-    private String email;
-
-    @Generated(event = EventType.INSERT)
-    @Column(name = "criado_em", nullable = false, updatable = false)
-    private Instant criadoEm;
-
-    protected Cliente() {
+    public Cliente(Long id, String nome, String email, Instant criadoEm) {
+        this.id = id;
+        this.nome = nome;
+        this.email = email;
+        this.criadoEm = criadoEm;
     }
 
     public Cliente(String nome, String email) {
-        this.nome = nome;
-        this.email = email;
+        this(null, nome, email, null);
     }
 
     public Long getId() {
@@ -52,16 +33,8 @@ public class Cliente {
         return nome;
     }
 
-    public void setNome(String nome) {
-        this.nome = nome;
-    }
-
     public String getEmail() {
         return email;
-    }
-
-    public void setEmail(String email) {
-        this.email = email;
     }
 
     public Instant getCriadoEm() {
@@ -73,15 +46,18 @@ public class Cliente {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof Cliente outro)) {
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        return id != null && id.equals(outro.getId());
+        Cliente outro = (Cliente) o;
+        return Objects.equals(id, outro.id)
+                && Objects.equals(nome, outro.nome)
+                && Objects.equals(email, outro.email);
     }
 
     @Override
     public int hashCode() {
-        return Cliente.class.hashCode();
+        return Objects.hash(id, nome, email);
     }
 
     @Override

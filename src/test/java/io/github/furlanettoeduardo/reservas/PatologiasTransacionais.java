@@ -1,7 +1,8 @@
 package io.github.furlanettoeduardo.reservas;
 
 import io.github.furlanettoeduardo.reservas.domain.Cliente;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ClienteJpa;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ClienteSpringData;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,7 +34,7 @@ public class PatologiasTransacionais {
         }
     }
 
-    private final ClienteRepository clientes;
+    private final ClienteSpringData clientes;
 
     /**
      * A referencia ao proprio bean, que e o proxy. ObjectProvider e nao injecao direta para
@@ -41,7 +42,7 @@ public class PatologiasTransacionais {
      */
     private final ObjectProvider<PatologiasTransacionais> proxyDeSiMesmo;
 
-    public PatologiasTransacionais(ClienteRepository clientes,
+    public PatologiasTransacionais(ClienteSpringData clientes,
                                    ObjectProvider<PatologiasTransacionais> proxyDeSiMesmo) {
         this.clientes = clientes;
         this.proxyDeSiMesmo = proxyDeSiMesmo;
@@ -83,7 +84,7 @@ public class PatologiasTransacionais {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void registraAuditoria(String email) {
-        clientes.save(new Cliente("Auditoria", email));
+        clientes.save(ClienteJpa.de(new Cliente("Auditoria", email)));
     }
 
     /**
@@ -111,20 +112,20 @@ public class PatologiasTransacionais {
      */
     @Transactional
     public void gravaEFalhaComChecked(String email) throws FalhaDeNegocio {
-        clientes.save(new Cliente("Checked", email));
+        clientes.save(ClienteJpa.de(new Cliente("Checked", email)));
         throw new FalhaDeNegocio("gravou e nao deveria ter commitado");
     }
 
     @Transactional(rollbackFor = FalhaDeNegocio.class)
     public void gravaEFalhaComCheckedDeclarada(String email) throws FalhaDeNegocio {
-        clientes.save(new Cliente("Declarada", email));
+        clientes.save(ClienteJpa.de(new Cliente("Declarada", email)));
         throw new FalhaDeNegocio("agora o rollback acontece");
     }
 
     /** Controle: mesma estrutura, excecao nao-checada. */
     @Transactional
     public void gravaEFalhaComRuntime(String email) {
-        clientes.save(new Cliente("Runtime", email));
+        clientes.save(ClienteJpa.de(new Cliente("Runtime", email)));
         throw new IllegalStateException("rollback padrao cobre esta");
     }
 
@@ -136,7 +137,7 @@ public class PatologiasTransacionais {
     @Transactional
     public void gravaEEngoleAChecked(String email) {
         try {
-            clientes.save(new Cliente("Engolida", email));
+            clientes.save(ClienteJpa.de(new Cliente("Engolida", email)));
             throw new FalhaDeNegocio("capturada aqui dentro");
         } catch (FalhaDeNegocio ignorada) {
             // nao propaga: a transacao segue valida e commita

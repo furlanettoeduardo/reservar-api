@@ -3,9 +3,9 @@ package io.github.furlanettoeduardo.reservas;
 import io.github.furlanettoeduardo.reservas.domain.Cliente;
 import io.github.furlanettoeduardo.reservas.domain.Espaco;
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.ReservaRepositorio;
 import io.github.furlanettoeduardo.reservas.service.NovaReserva;
 import io.github.furlanettoeduardo.reservas.service.ReservaResponse;
 import io.github.furlanettoeduardo.reservas.service.ReservaService;
@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
@@ -43,13 +44,15 @@ class EscalaDecimalIT {
     @Autowired
     private ReservaService service;
     @Autowired
-    private ReservaRepository reservaRepository;
+    private ReservaRepositorio reservas;
     @Autowired
-    private EspacoRepository espacoRepository;
+    private EspacoRepositorio espacos;
     @Autowired
-    private ClienteRepository clienteRepository;
+    private ClienteRepositorio clientes;
     @Autowired
     private TransactionTemplate transacao;
+    @Autowired
+    private JdbcTemplate jdbc;
 
     private Long espacoId;
     private Long clienteId;
@@ -59,15 +62,11 @@ class EscalaDecimalIT {
 
     @BeforeEach
     void semear() {
+        LimpezaDeBase.limpar(jdbc);
         transacao.executeWithoutResult(status -> {
-            reservaRepository.deleteAll();
-            clienteRepository.deleteAll();
-            espacoRepository.deleteAll();
-        });
-        transacao.executeWithoutResult(status -> {
-            espacoId = espacoRepository.save(
+            espacoId = espacos.salvar(
                     new Espaco("Sala Azul", 30, new BigDecimal("150.00"))).getId();
-            clienteId = clienteRepository.save(new Cliente("Ana", "ana@exemplo.com")).getId();
+            clienteId = clientes.salvar(new Cliente("Ana", "ana@exemplo.com")).getId();
         });
     }
 
@@ -94,7 +93,7 @@ class EscalaDecimalIT {
                 new NovaReserva(espacoId, clienteId, INICIO, FIM)).id();
 
         BigDecimal relido = transacao.execute(status ->
-                reservaRepository.findById(reservaId).orElseThrow().getValorTotal());
+                reservas.porId(reservaId).orElseThrow().getValorTotal());
 
         assertThat(relido)
                 .as("valor certo")
@@ -136,7 +135,7 @@ class EscalaDecimalIT {
                 new NovaReserva(espacoId, clienteId, INICIO, FIM)).id();
 
         Reserva entidade = transacao.execute(status ->
-                reservaRepository.findById(reservaId).orElseThrow());
+                reservas.porId(reservaId).orElseThrow());
         ReservaResponse dto = service.listarConfirmadasDoEspaco(espacoId).getFirst();
 
         assertThat(entidade.getValorTotal().scale())

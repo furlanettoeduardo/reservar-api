@@ -9,19 +9,21 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Linha de base da estrutura de hoje. <b>Estas regras devem quebrar na refatoração
- * hexagonal</b> — é o objetivo delas.
+ * Linha de base da estrutura atual. <b>Estas asserções descrevem onde as coisas estão, e mudam
+ * quando a estrutura muda</b> — ao contrário de {@link InvariantesArquiteturaisTests}, que não
+ * deve mudar.
  *
- * <p>Separadas de {@link InvariantesArquiteturaisTests} para que um build vermelho durante a
- * refatoração seja legível: se quebrou aqui, a estrutura mudou como planejado e o teste é que
- * precisa ser atualizado; se quebrou lá, a refatoração violou algo que não devia.
+ * <p>A separação se pagou na refatoração hexagonal: os seis invariantes passaram sem toque e os
+ * quatro testes deste arquivo falharam. O vermelho foi legível de imediato, sem precisar decidir
+ * se a refatoração estava errada ou se o teste estava velho.
  *
- * <p>É o mesmo desenho de {@code ConcorrenciaReservaIT} e {@code AtualizacaoPerdidaIT}: a
- * asserção afirma o estado atual, e corrigi-la é o que documenta a mudança.
+ * <p>Uma das asserções deste arquivo <b>saiu</b> dele: a que afirmava que
+ * {@code Espaco, Cliente, Reserva} dependiam de {@code jakarta.persistence} virou o invariante
+ * {@code dominioNaoDependeDeJpaNemDeHibernate}. A migração de arquivo é o registro de que o
+ * trabalho terminou.
  */
 class EstruturaAtualTests {
 
@@ -32,57 +34,63 @@ class EstruturaAtualTests {
     private static final String RAIZ = "io.github.furlanettoeduardo.reservas";
 
     /**
-     * O ponto central da refatoração hexagonal: hoje as entidades de domínio carregam as
-     * anotações de JPA, então o domínio depende de {@code jakarta.persistence}. Depois, o
-     * mapeamento vira adaptador e este conjunto fica vazio.
+     * O espelho da asserção que virou invariante: as três classes que carregavam JPA no domínio
+     * têm agora contrapartes no adaptador, e são elas que carregam o mapeamento.
      *
-     * <p>A lista é exata, e não um "contém": {@code Periodo} e {@code StatusReserva} já são
-     * livres de framework hoje, e é isso que torna a refatoração viável — o value object mostra
-     * que o padrão funciona antes de aplicá-lo às entidades.
+     * <p>Lista exata de propósito. Se aparecer uma quarta entidade JPA sem uma decisão consciente
+     * — por exemplo alguém anotando um DTO — este teste avisa.
      */
     @Test
-    void hoje_asEntidadesDeDominioCarregamAnotacoesDeJpa() {
+    void hoje_oMapeamentoJpaVivePorInteiroNoAdaptador() {
         Set<String> comPersistencia = CLASSES.stream()
-                .filter(c -> c.getPackageName().equals(RAIZ + ".domain"))
+                .filter(EstruturaAtualTests::dependeDeJpa)
+                .map(JavaClass::getPackageName)
+                .collect(Collectors.toSet());
+
+        assertThat(comPersistencia)
+                .as("um pacote so conhece jakarta.persistence")
+                .containsExactly(RAIZ + ".repository.jpa");
+
+        Set<String> entidades = CLASSES.stream()
+                .filter(c -> c.getPackageName().equals(RAIZ + ".repository.jpa"))
                 .filter(EstruturaAtualTests::dependeDeJpa)
                 .map(JavaClass::getSimpleName)
                 .collect(Collectors.toSet());
 
-        assertThat(comPersistencia)
-                .as("LINHA DE BASE: quando a refatoracao hexagonal tirar JPA do dominio, este "
-                        + "conjunto fica vazio e este teste falha. A falha e o registro da "
-                        + "mudanca.")
-                .containsExactlyInAnyOrder("Espaco", "Cliente", "Reserva");
+        assertThat(entidades)
+                .as("as tres entidades JPA, e nada mais")
+                .containsExactlyInAnyOrder("EspacoJpa", "ClienteJpa", "ReservaJpa");
     }
 
     @Test
-    void hoje_oDominioTemUmValueObjectLivreDeFramework() {
-        Set<String> livres = CLASSES.stream()
+    void hoje_oDominioTemCincoTiposEUmPacoteDePortas() {
+        Set<String> dominio = CLASSES.stream()
                 .filter(c -> c.getPackageName().equals(RAIZ + ".domain"))
-                .filter(c -> !dependeDeJpa(c))
                 .map(JavaClass::getSimpleName)
                 .collect(Collectors.toSet());
 
-        assertThat(livres).containsExactlyInAnyOrder("Periodo", "StatusReserva");
-    }
+        assertThat(dominio)
+                .containsExactlyInAnyOrder("Espaco", "Cliente", "Reserva", "Periodo",
+                        "StatusReserva");
 
-    @Test
-    void hoje_oRepositorioSoEhAlcancadoPeloServico() {
-        noClasses()
-                .that().resideOutsideOfPackages(RAIZ + ".repository", RAIZ + ".service", RAIZ + ".dev")
-                .should().dependOnClassesThat().resideInAPackage("..repository..")
-                .as("LINHA DE BASE: hoje repository e um pacote proprio. Na arquitetura "
-                        + "hexagonal ele deixa de existir como camada e vira porta mais "
-                        + "adaptador, e esta regra perde sentido.")
-                .check(CLASSES);
+        Set<String> portas = CLASSES.stream()
+                .filter(c -> c.getPackageName().equals(RAIZ + ".domain.port"))
+                .map(JavaClass::getSimpleName)
+                .collect(Collectors.toSet());
+
+        assertThat(portas)
+                .as("uma porta por agregado que precisa de persistencia")
+                .containsExactlyInAnyOrder("EspacoRepositorio", "ClienteRepositorio",
+                        "ReservaRepositorio");
     }
 
     /**
-     * Historico desta assercao, que e o registro da refatoracao acontecendo:
+     * Histórico desta asserção, que é o registro da refatoração acontecendo:
      *
      * <pre>
-     * 1A a 1C:  raiz, domain, repository, service, web, dev
-     * portas:   + domain.port          &lt;- inversao de dependencia
+     * 1A a 1C:   raiz, domain, repository, service, web, dev
+     * portas:    + domain.port         &lt;- inversão de dependência
+     * separação: + repository.jpa      &lt;- entidades JPA saíram do domínio
      * </pre>
      */
     @Test
@@ -94,10 +102,8 @@ class EstruturaAtualTests {
                 .collect(Collectors.toSet());
 
         assertThat(pacotes)
-                .as("LINHA DE BASE da estrutura de pastas, para o diff da refatoracao ser "
-                        + "comparavel a algo escrito antes dela")
                 .containsExactlyInAnyOrder("(raiz)", "domain", "domain.port", "repository",
-                        "service", "web", "dev");
+                        "repository.jpa", "service", "web", "dev");
     }
 
     private static boolean dependeDeJpa(JavaClass classe) {

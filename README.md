@@ -358,6 +358,29 @@ inicializa proxies em silêncio.
 Conclusão prática: coleção de **ids**, não de entidades. Detalhes em
 [`docs/jpa-patologias.md`](docs/jpa-patologias.md).
 
+## Arquitetura: portas e adaptadores
+
+O domínio não conhece framework nenhum — nem JPA, nem Spring, nem Jackson. As entidades JPA vivem
+confinadas no adaptador de persistência, e o serviço depende de interfaces declaradas no próprio
+domínio.
+
+```
+domain/          Espaco, Cliente, Reserva, Periodo, StatusReserva   (zero framework, imutável)
+domain/port/     as três interfaces de repositório
+service/         casos de uso e DTOs
+repository/      adaptadores que implementam as portas
+repository/jpa/  entidades JPA + Spring Data
+web/             controllers, ProblemDetail, CORS
+```
+
+O custo está medido, não estimado: **+299 linhas de produção (+20%)**, +14s no `mvn verify`, e 122
+erros de compilação de teste na transição. O ganho também: **nenhum número de desempenho mudou** —
+listagem em 1 query, criação em 4, TOCTOU e lost update com os mesmos invariantes — e três
+patologias do 1B mudaram de camada, duas delas ficando impossíveis acima do adaptador.
+
+Detalhes, limitações e as condições em que isto **não** valeria estão no
+[ADR 0004](docs/adr/0004-arquitetura-hexagonal.md).
+
 ## Arquitetura executável e cobertura de mutação
 
 ### ArchUnit: invariantes separados de descrições
@@ -455,6 +478,7 @@ correções falham: mover a falha para outra camada e mover a falha para outro a
 - [ADR 0001 — Relacionamento unidirecional](docs/adr/0001-relacionamento-unidirecional.md)
 - [ADR 0002 — JPQL em vez de query derivation](docs/adr/0002-jpql-em-vez-de-query-derivation.md)
 - [ADR 0003 — `ListCrudRepository` em vez de `JpaRepository`](docs/adr/0003-listcrudrepository-em-vez-de-jparepository.md)
+- [ADR 0004 — Portas e adaptadores, com o custo medido](docs/adr/0004-arquitetura-hexagonal.md)
 
 ## Stack
 

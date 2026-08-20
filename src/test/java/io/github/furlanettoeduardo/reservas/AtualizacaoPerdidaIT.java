@@ -1,9 +1,7 @@
 package io.github.furlanettoeduardo.reservas;
 
 import io.github.furlanettoeduardo.reservas.domain.Espaco;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,37 +19,32 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Patologia n.3 do 1B, segunda metade: o custo real do UPDATE cego.
+ * Patologia nº 3 do 1B, segunda metade: o custo do UPDATE cego, e o que a `V3` fez com ele.
  *
- * <p>A primeira metade -- dirty checking emite UPDATE sem {@code save()} -- está em
- * {@code ReservaServiceIT}. Esta mede a consequência, que até agora estava <b>raciocinada e não
- * medida</b>: como o Hibernate reescreve todas as colunas em qualquer alteração, duas
- * transações editando campos <b>diferentes</b> da mesma linha não conflitam logicamente, e ainda
- * assim uma apaga a outra.
- *
- * <p>Mesma família do {@code total++} sem sincronização, com a região crítica sendo a linha
- * inteira em vez de um {@code int}.
- *
- * <p>Uma thread muda {@code nome}, a outra muda {@code capacidade}. Nada em conflito. A barreira
- * garante que as duas carreguem antes de qualquer uma gravar -- sem isso o experimento
- * dependeria de sorte, e teste de concorrência que depende de sorte não prova nada.
- *
- * <p>Três estados medidos:
+ * <p>Duas transações editando campos <b>diferentes</b> da mesma linha não conflitam logicamente,
+ * e antes da `V3` uma apagava a outra em silêncio. Três estados medidos:
  *
  * <pre>
- * antes da V3:        falhas=0 | uma edição sobreviveu | a outra desapareceu em silêncio
- * depois da V3:       falhas=1 | uma edição sobreviveu | a outra foi REPORTADA como conflito
- * V3 + retry:         falhas=0 | as DUAS edições sobreviveram
+ * antes da V3:   falhas=0 | uma edição sobreviveu | a outra desapareceu em silêncio
+ * depois da V3:  falhas=1 | uma edição sobreviveu | a outra foi REPORTADA como conflito
+ * V3 + retry:    falhas=0 | as DUAS edições sobreviveram
  * </pre>
  *
- * <p>O meio da tabela é o que costuma ser mal entendido: {@code @Version} <b>não</b> preserva as
- * duas escritas. Ele troca perda silenciosa por conflito reportado. Preservar as duas é trabalho
- * do retry, que usa a informação que o {@code @Version} passou a dar.
+ * <p>{@code @Version} não preserva as duas escritas: troca perda silenciosa por conflito
+ * reportado. Preservar as duas é trabalho do retry.
+ *
+ * <p><b>A refatoração hexagonal mudou a forma deste teste, não o resultado.</b> O domínio virou
+ * imutável, então {@code espaco.setNome(...)} deixou de existir e virou
+ * {@code espacos.salvar(espaco.comNome(...))}. A proteção continua funcionando porque o
+ * {@code salvar} do adaptador rebusca a instância gerenciada <b>na mesma transação</b> que a
+ * carregou — o persistence context devolve o mesmo objeto, e o {@code @Version} vê a versão que
+ * a transação leu. Se o salvar rodasse em outra transação, o lost update voltaria; está
+ * registrado como limitação no ADR 0004.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -63,11 +56,7 @@ class AtualizacaoPerdidaIT {
     private static final int CAPACIDADE_NOVA = 99;
 
     @Autowired
-    private EspacoRepository espacoRepository;
-    @Autowired
-    private ReservaRepository reservaRepository;
-    @Autowired
-    private ClienteRepository clienteRepository;
+    private EspacoRepositorio espacos;
     @Autowired
     private TransactionTemplate transacao;
     @Autowired
@@ -77,12 +66,8 @@ class AtualizacaoPerdidaIT {
 
     @BeforeEach
     void semear() {
-        transacao.executeWithoutResult(status -> {
-            reservaRepository.deleteAll();
-            clienteRepository.deleteAll();
-            espacoRepository.deleteAll();
-        });
-        transacao.executeWithoutResult(status -> espacoId = espacoRepository.save(
+        LimpezaDeBase.limpar(jdbc);
+        transacao.executeWithoutResult(status -> espacoId = espacos.salvar(
                 new Espaco(NOME_ORIGINAL, CAPACIDADE_ORIGINAL, new BigDecimal("150.00"))).getId());
     }
 
@@ -91,13 +76,11 @@ class AtualizacaoPerdidaIT {
         CyclicBarrier ambasCarregaram = new CyclicBarrier(2);
 
         List<Exception> falhas = executar(
-                editor(ambasCarregaram, e -> e.setNome(NOME_NOVO)),
-                editor(ambasCarregaram, e -> e.setCapacidade(CAPACIDADE_NOVA)));
+                editor(ambasCarregaram, e -> e.comNome(NOME_NOVO)),
+                editor(ambasCarregaram, e -> e.comCapacidade(CAPACIDADE_NOVA)));
 
-        String nome = jdbc.queryForObject(
-                "select nome from espaco where id = ?", String.class, espacoId);
-        int capacidade = jdbc.queryForObject(
-                "select capacidade from espaco where id = ?", Integer.class, espacoId);
+        String nome = nomeGravado();
+        int capacidade = capacidadeGravada();
         long versao = jdbc.queryForObject(
                 "select versao from espaco where id = ?", Long.class, espacoId);
 
@@ -124,53 +107,51 @@ class AtualizacaoPerdidaIT {
     }
 
     /**
-     * O terceiro estado, e o unico em que as duas edicoes coexistem: detectar, recarregar e
-     * reaplicar. E o que fecha o raciocinio -- {@code @Version} da a informacao, o retry usa a
-     * informacao.
+     * O terceiro estado, e o único em que as duas edições coexistem: detectar, recarregar e
+     * reaplicar. {@code @Version} dá a informação, o retry usa a informação.
      */
     @Test
     void comRetryAsDuasEdicoesSobrevivem() throws Exception {
         CyclicBarrier ambasCarregaram = new CyclicBarrier(2);
 
         List<Exception> falhas = executar(
-                editorComRetry(ambasCarregaram, e -> e.setNome(NOME_NOVO)),
-                editorComRetry(ambasCarregaram, e -> e.setCapacidade(CAPACIDADE_NOVA)));
-
-        String nome = jdbc.queryForObject(
-                "select nome from espaco where id = ?", String.class, espacoId);
-        int capacidade = jdbc.queryForObject(
-                "select capacidade from espaco where id = ?", Integer.class, espacoId);
+                editorComRetry(ambasCarregaram, e -> e.comNome(NOME_NOVO)),
+                editorComRetry(ambasCarregaram, e -> e.comCapacidade(CAPACIDADE_NOVA)));
 
         System.out.printf("[lost update] com retry: falhas=%d | nome='%s' | capacidade=%d%n",
-                falhas.size(), nome, capacidade);
+                falhas.size(), nomeGravado(), capacidadeGravada());
 
         assertThat(falhas).isEmpty();
-        assertThat(nome).isEqualTo(NOME_NOVO);
-        assertThat(capacidade)
+        assertThat(nomeGravado()).isEqualTo(NOME_NOVO);
+        assertThat(capacidadeGravada())
                 .as("as duas edicoes coexistem: a que perdeu recarregou o estado ja com a "
                         + "alteracao da outra e reaplicou a sua")
                 .isEqualTo(CAPACIDADE_NOVA);
     }
 
-    /** Controle: em sequencia, as duas edicoes coexistem sem retry nenhum. */
+    /** Controle: em sequência, as duas edições coexistem sem retry nenhum. */
     @Test
     void sequencialmenteAsDuasEdicoesCoexistem() {
-        transacao.executeWithoutResult(status ->
-                espacoRepository.findById(espacoId).orElseThrow().setNome(NOME_NOVO));
-        transacao.executeWithoutResult(status ->
-                espacoRepository.findById(espacoId).orElseThrow().setCapacidade(CAPACIDADE_NOVA));
+        editarUmaVez(null, e -> e.comNome(NOME_NOVO));
+        editarUmaVez(null, e -> e.comCapacidade(CAPACIDADE_NOVA));
 
-        Espaco depois = transacao.execute(status ->
-                espacoRepository.findById(espacoId).orElseThrow());
-
-        assertThat(depois.getNome()).isEqualTo(NOME_NOVO);
-        assertThat(depois.getCapacidade()).isEqualTo(CAPACIDADE_NOVA);
+        assertThat(nomeGravado()).isEqualTo(NOME_NOVO);
+        assertThat(capacidadeGravada()).isEqualTo(CAPACIDADE_NOVA);
     }
 
-    private Callable<Object> editor(CyclicBarrier ambasCarregaram, Consumer<Espaco> mutacao) {
+    private String nomeGravado() {
+        return jdbc.queryForObject("select nome from espaco where id = ?", String.class, espacoId);
+    }
+
+    private int capacidadeGravada() {
+        return jdbc.queryForObject(
+                "select capacidade from espaco where id = ?", Integer.class, espacoId);
+    }
+
+    private Callable<Object> editor(CyclicBarrier ambasCarregaram, UnaryOperator<Espaco> edicao) {
         return () -> {
             try {
-                editarUmaVez(ambasCarregaram, mutacao);
+                editarUmaVez(ambasCarregaram, edicao);
                 return "ok";
             } catch (RuntimeException e) {
                 return e;
@@ -179,15 +160,14 @@ class AtualizacaoPerdidaIT {
     }
 
     private Callable<Object> editorComRetry(CyclicBarrier ambasCarregaram,
-                                           Consumer<Espaco> mutacao) {
+                                            UnaryOperator<Espaco> edicao) {
         return () -> {
             try {
-                editarUmaVez(ambasCarregaram, mutacao);
+                editarUmaVez(ambasCarregaram, edicao);
             } catch (ObjectOptimisticLockingFailureException conflito) {
                 // Recarrega em transacao nova, ja com a alteracao da outra thread visivel, e
                 // reaplica a sua. Sem barreira desta vez: a corrida ja aconteceu.
-                transacao.executeWithoutResult(status ->
-                        mutacao.accept(espacoRepository.findById(espacoId).orElseThrow()));
+                editarUmaVez(null, edicao);
             } catch (RuntimeException e) {
                 return e;
             }
@@ -195,13 +175,17 @@ class AtualizacaoPerdidaIT {
         };
     }
 
-    private void editarUmaVez(CyclicBarrier ambasCarregaram, Consumer<Espaco> mutacao) {
+    /**
+     * Carrega, espera a outra thread, e grava a versão editada. O {@code salvar} dentro da mesma
+     * transação é o que faz o {@code @Version} enxergar a versão lida.
+     */
+    private void editarUmaVez(CyclicBarrier ambasCarregaram, UnaryOperator<Espaco> edicao) {
         transacao.executeWithoutResult(status -> {
-            Espaco espaco = espacoRepository.findById(espacoId).orElseThrow();
-            aguardar(ambasCarregaram);
-            mutacao.accept(espaco);
-            // commit ao retornar: dirty checking emite o UPDATE de todas as colunas,
-            // agora com "and versao = ?" no where
+            Espaco espaco = espacos.porId(espacoId).orElseThrow();
+            if (ambasCarregaram != null) {
+                aguardar(ambasCarregaram);
+            }
+            espacos.salvar(edicao.apply(espaco));
         });
     }
 

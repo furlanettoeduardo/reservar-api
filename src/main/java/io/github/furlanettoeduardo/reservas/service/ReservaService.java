@@ -71,12 +71,20 @@ public class ReservaService {
         return ReservaResponse.de(reservas.salvar(Reserva.nova(espaco, cliente, periodo)));
     }
 
-    /** Sem save(): dentro da transacao o dirty checking detecta a mudanca e emite o UPDATE. */
+    /**
+     * Agora com salvar() explicito, e isso e a mudanca visivel da refatoracao neste arquivo.
+     *
+     * <p>Antes o dominio era a entidade JPA, entao mudar o objeto bastava: o dirty checking
+     * emitia o UPDATE sozinho. Com o dominio separado e imutavel, {@code cancelar()} devolve uma
+     * reserva nova e nada acontece se ninguem gravar. Uma linha a mais, e em troca a gravacao
+     * deixou de ser efeito colateral invisivel -- o "update fantasma" da patologia n.3 nao tem
+     * mais como existir.
+     */
     @Transactional
     public void cancelar(Long reservaId) {
         Reserva reserva = reservas.porId(reservaId)
                 .orElseThrow(() -> new RecursoNaoEncontradoException("reserva", reservaId));
-        reserva.cancelar();
+        reservas.salvar(reserva.cancelar());
     }
 
     /**

@@ -5,7 +5,7 @@ import io.github.furlanettoeduardo.reservas.domain.Espaco;
 import io.github.furlanettoeduardo.reservas.domain.Periodo;
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
 import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.ReservaRepositorio;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -13,7 +13,11 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
-import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.repository.ClienteRepositorioJpa;
+import io.github.furlanettoeduardo.reservas.repository.EspacoRepositorioJpa;
+import io.github.furlanettoeduardo.reservas.repository.ReservaRepositorioJpa;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 
@@ -27,7 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(TestcontainersConfiguration.class)
+// Os adaptadores entram explicitamente: @DataJpaTest escaneia repositorios Spring Data, e nao
+// beans @Repository comuns. Custo recorrente da inversao em teste de fatia -- a fatia passou a
+// precisar saber quem implementa a porta.
+@Import({TestcontainersConfiguration.class, ReservaRepositorioJpa.class,
+        EspacoRepositorioJpa.class, ClienteRepositorioJpa.class})
 @TestPropertySource(properties = {
         "spring.jpa.show-sql=true",
         "spring.jpa.properties.hibernate.format_sql=true"
@@ -35,10 +43,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ReservaRepositoryIT {
 
     @Autowired
-    private ReservaRepository reservas;
+    private ReservaRepositorio reservas;
 
     @Autowired
-    private TestEntityManager em;
+    private EspacoRepositorio espacos;
+    @Autowired
+    private ClienteRepositorio clientes;
 
     private Espaco espaco;
     private Cliente cliente;
@@ -49,10 +59,10 @@ class ReservaRepositoryIT {
 
     @BeforeEach
     void preparar() {
-        espaco = em.persist(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
-        cliente = em.persist(new Cliente("Ana", "ana@exemplo.com"));
-        em.persist(Reserva.nova(espaco, cliente, new Periodo(hora("13:00"), hora("15:00"))));
-        em.flush();
+        espaco = espacos.salvar(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
+        cliente = clientes.salvar(new Cliente("Ana", "ana@exemplo.com"));
+        reservas.salvar(Reserva.nova(espaco, cliente,
+                new Periodo(hora("13:00"), hora("15:00"))));
     }
 
     @ParameterizedTest(name = "[{index}] {0}-{1} -> {2} ({3})")
@@ -76,10 +86,8 @@ class ReservaRepositoryIT {
 
     @Test
     void reservaCanceladaNaoBloqueia() {
-        Reserva existente = reservas.findByEspacoIdAndStatusOrderByInicioAsc(
-                espaco.getId(), StatusReserva.CONFIRMADA).getFirst();
-        existente.cancelar();
-        em.flush();
+        Reserva existente = reservas.confirmadasDoEspaco(espaco.getId()).getFirst();
+        reservas.salvar(existente.cancelar());
 
         boolean houve = reservas.existeSobreposicao(
                 espaco.getId(), StatusReserva.CONFIRMADA, hora("13:30"), hora("14:30"));
@@ -89,7 +97,7 @@ class ReservaRepositoryIT {
 
     @Test
     void reservaDeOutroEspacoNaoBloqueia() {
-        Espaco outro = em.persistAndFlush(new Espaco("Sala Verde", 10, new BigDecimal("90.00")));
+        Espaco outro = espacos.salvar(new Espaco("Sala Verde", 10, new BigDecimal("90.00")));
 
         boolean houve = reservas.existeSobreposicao(
                 outro.getId(), StatusReserva.CONFIRMADA, hora("13:30"), hora("14:30"));

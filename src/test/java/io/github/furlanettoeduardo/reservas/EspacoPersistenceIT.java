@@ -1,6 +1,7 @@
 package io.github.furlanettoeduardo.reservas;
 
 import io.github.furlanettoeduardo.reservas.domain.Espaco;
+import io.github.furlanettoeduardo.reservas.repository.jpa.EspacoJpa;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -32,15 +33,15 @@ class EspacoPersistenceIT {
 
     @Test
     void criadoEmEhPreenchidoPeloBancoESincronizadoNoObjeto() {
-        Espaco espaco = new Espaco("Sala Azul", 30, new BigDecimal("150.00"));
+        EspacoJpa espaco = EspacoJpa.de(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
 
-        assertThat(espaco.getCriadoEm()).isNull();
+        assertThat(espaco.paraDominio().getCriadoEm()).isNull();
 
         Instant antes = Instant.now();
         em.persistAndFlush(espaco);
 
         assertThat(espaco.getId()).isNotNull();
-        assertThat(espaco.getCriadoEm())
+        assertThat(espaco.paraDominio().getCriadoEm())
                 .as("o valor gerado pelo banco tem que voltar para o objeto sem refresh()")
                 .isNotNull()
                 .isAfterOrEqualTo(antes.minusSeconds(5));
@@ -48,9 +49,10 @@ class EspacoPersistenceIT {
 
     @Test
     void precoHoraSobreviveAoRoundTripComEscala() {
-        Espaco espaco = em.persistFlushFind(new Espaco("Sala Verde", 10, new BigDecimal("99.90")));
+        EspacoJpa espaco = em.persistFlushFind(
+                EspacoJpa.de(new Espaco("Sala Verde", 10, new BigDecimal("99.90"))));
 
-        assertThat(espaco.getPrecoHora())
+        assertThat(espaco.paraDominio().getPrecoHora())
                 .as("NUMERIC(19,4) volta como 99.9000 -- isEqualTo falharia, compareTo nao")
                 .isEqualByComparingTo("99.90");
     }

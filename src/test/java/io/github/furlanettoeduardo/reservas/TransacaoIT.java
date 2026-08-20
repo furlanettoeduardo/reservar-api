@@ -2,14 +2,13 @@ package io.github.furlanettoeduardo.reservas;
 
 import io.github.furlanettoeduardo.reservas.PatologiasTransacionais.FalhaDeNegocio;
 import io.github.furlanettoeduardo.reservas.PatologiasTransacionais.Observacao;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ClienteSpringData;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -28,18 +27,13 @@ class TransacaoIT {
     @Autowired
     private PatologiasTransacionais patologias;
     @Autowired
-    private ClienteRepository clientes;
+    private ClienteSpringData clientes;
     @Autowired
-    private ReservaRepository reservas;
-    @Autowired
-    private TransactionTemplate transacao;
+    private JdbcTemplate jdbc;
 
     @BeforeEach
     void limpar() {
-        transacao.executeWithoutResult(status -> {
-            reservas.deleteAll();
-            clientes.deleteAll();
-        });
+        LimpezaDeBase.limpar(jdbc);
     }
 
     // ---------------------------------------------------------------- n.4: autoinvocacao

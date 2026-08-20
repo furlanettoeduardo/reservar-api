@@ -5,6 +5,9 @@ import io.github.furlanettoeduardo.reservas.domain.Espaco;
 import io.github.furlanettoeduardo.reservas.domain.Periodo;
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
 import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ClienteJpa;
+import io.github.furlanettoeduardo.reservas.repository.jpa.EspacoJpa;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ReservaJpa;
 import org.hibernate.Hibernate;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,12 +34,15 @@ class ReservaPersistenceIT {
     @Autowired
     private TestEntityManager em;
 
-    private Reserva novaReservaPersistida() {
-        Espaco espaco = em.persist(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
-        Cliente cliente = em.persist(new Cliente("Ana", "ana@exemplo.com"));
+    private ReservaJpa novaReservaPersistida() {
+        EspacoJpa espaco = em.persist(
+                EspacoJpa.de(new Espaco("Sala Azul", 30, new BigDecimal("150.00"))));
+        ClienteJpa cliente = em.persist(ClienteJpa.de(new Cliente("Ana", "ana@exemplo.com")));
         Instant inicio = Instant.parse("2026-09-01T13:00:00Z");
-        return em.persist(Reserva.nova(espaco, cliente,
-                new Periodo(inicio, inicio.plusSeconds(7200))));
+        return em.persist(ReservaJpa.de(
+                Reserva.nova(espaco.paraDominio(), cliente.paraDominio(),
+                        new Periodo(inicio, inicio.plusSeconds(7200))),
+                espaco, cliente));
     }
 
     @Test
@@ -45,14 +51,14 @@ class ReservaPersistenceIT {
         em.flush();
         em.clear();
 
-        Reserva reserva = em.find(Reserva.class, id);
+        ReservaJpa reserva = em.find(ReservaJpa.class, id);
 
         assertThat(Hibernate.isInitialized(reserva.getEspaco()))
                 .as("getEspaco() devolve proxy; sem LAZY explicito o EAGER default ja teria feito join")
                 .isFalse();
         assertThat(Hibernate.isInitialized(reserva.getCliente())).isFalse();
 
-        assertThat(reserva.getEspaco().getNome()).isEqualTo("Sala Azul");
+        assertThat(reserva.getEspaco().paraDominio().getNome()).isEqualTo("Sala Azul");
 
         assertThat(Hibernate.isInitialized(reserva.getEspaco()))
                 .as("ler uma propriedade do proxy e o que dispara o SELECT -- a origem do N+1 em laco")
@@ -68,7 +74,7 @@ class ReservaPersistenceIT {
         em.flush();
         em.clear();
 
-        Reserva reserva = em.find(Reserva.class, id);
+        ReservaJpa reserva = em.find(ReservaJpa.class, id);
 
         assertThat(reserva.getEspaco().getId())
                 .as("o id vem da FK que ja esta na linha de reserva")
@@ -78,7 +84,7 @@ class ReservaPersistenceIT {
 
     @Test
     void statusEhGravadoComoTextoNaoComoIndice() {
-        Reserva reserva = novaReservaPersistida();
+        ReservaJpa reserva = novaReservaPersistida();
         em.flush();
 
         Object status = em.getEntityManager()
@@ -91,10 +97,10 @@ class ReservaPersistenceIT {
                         + "reescreveria o significado de toda linha ja gravada")
                 .isEqualTo("CONFIRMADA");
 
-        reserva.cancelar();
+        reserva.aplicar(reserva.paraDominio().cancelar());
         em.flush();
 
-        assertThat(em.find(Reserva.class, reserva.getId()).getStatus())
+        assertThat(em.find(ReservaJpa.class, reserva.getId()).paraDominio().getStatus())
                 .isEqualTo(StatusReserva.CANCELADA);
     }
 }

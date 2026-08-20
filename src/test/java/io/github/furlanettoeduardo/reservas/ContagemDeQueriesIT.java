@@ -4,20 +4,19 @@ import io.github.furlanettoeduardo.reservas.domain.Cliente;
 import io.github.furlanettoeduardo.reservas.domain.Espaco;
 import io.github.furlanettoeduardo.reservas.domain.Periodo;
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
-import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.ReservaRepositorio;
 import io.github.furlanettoeduardo.reservas.service.NovaReserva;
 import io.github.furlanettoeduardo.reservas.service.ReservaResponse;
 import io.github.furlanettoeduardo.reservas.service.ReservaService;
 import jakarta.persistence.EntityManagerFactory;
-import org.hibernate.LazyInitializationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -26,16 +25,14 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Mede o "antes" da patologia n.1 do 1B. Nao corrige nada -- o numero medido aqui e o que da
- * substancia a correcao depois.
+ * Baselines de custo de query do caminho de produção, travados com igualdade exata para que
+ * qualquer mudança em plano de fetch tenha que encarar o número.
  *
- * <p>{@code @SpringBootTest} sem {@code @Transactional} de proposito: cada chamada de servico
- * abre e fecha a propria transacao, que e o que acontece em producao. Num
- * {@code @DataJpaTest} tudo compartilharia um persistence context e o N+1 sumiria por causa
- * do cache de primeiro nivel -- o teste passaria a medir o cache, nao a query.
+ * <p>{@code @SpringBootTest} <b>sem</b> {@code @Transactional}: dentro da transação de um
+ * {@code @DataJpaTest} os clientes já estariam no persistence context e a listagem devolveria 1
+ * query de qualquer jeito — o teste passaria medindo o cache em vez da query.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -47,45 +44,37 @@ class ContagemDeQueriesIT {
     @Autowired
     private ReservaService service;
     @Autowired
-    private ReservaRepository reservaRepository;
+    private ReservaRepositorio reservas;
     @Autowired
-    private EspacoRepository espacoRepository;
+    private EspacoRepositorio espacos;
     @Autowired
-    private ClienteRepository clienteRepository;
+    private ClienteRepositorio clientes;
     @Autowired
     private TransactionTemplate transacao;
     @Autowired
     private EntityManagerFactory emf;
+    @Autowired
+    private JdbcTemplate jdbc;
 
     private Long espacoId;
     private Long clienteAvulso;
     private ContadorDeQueries contador;
 
     @BeforeEach
-    void semearCinquentaReservasDeClientesDistintos() {
-        // Limpeza em transacao SEPARADA de proposito. Na mesma transacao, o Hibernate ordena
-        // o flush por tipo de operacao -- inserts antes de deletes -- entao os clientes novos
-        // tentariam entrar antes de os antigos sairem e o UNIQUE de email estouraria. A ordem
-        // em que voce chama os metodos nao e a ordem em que o SQL sai.
-        transacao.executeWithoutResult(status -> {
-            reservaRepository.deleteAll();
-            clienteRepository.deleteAll();
-            espacoRepository.deleteAll();
-        });
+    void semearClientesDistintos() {
+        LimpezaDeBase.limpar(jdbc);
 
         transacao.executeWithoutResult(status -> {
-            Espaco espaco = espacoRepository.save(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
+            Espaco espaco = espacos.salvar(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
             espacoId = espaco.getId();
-
-            clienteAvulso = clienteRepository.save(
-                    new Cliente("Avulso", "avulso@exemplo.com")).getId();
+            clienteAvulso = clientes.salvar(new Cliente("Avulso", "avulso@exemplo.com")).getId();
 
             Instant base = Instant.parse("2026-09-01T08:00:00Z");
             for (int i = 0; i < QUANTIDADE_DE_RESERVAS; i++) {
-                Cliente cliente = clienteRepository.save(
+                Cliente cliente = clientes.salvar(
                         new Cliente("Cliente " + i, "cliente%d@exemplo.com".formatted(i)));
-                Periodo periodo = new Periodo(base.plusSeconds(i * 3600L), base.plusSeconds((i + 1) * 3600L));
-                reservaRepository.save(Reserva.nova(espaco, cliente, periodo));
+                reservas.salvar(Reserva.nova(espaco, cliente, new Periodo(
+                        base.plusSeconds(i * 3600L), base.plusSeconds((i + 1) * 3600L))));
             }
         });
 
@@ -106,16 +95,17 @@ class ContagemDeQueriesIT {
             assertThat(r.clienteNome()).startsWith("Cliente ");
         });
 
-        // Igualdade exata, nao isLessThanOrEqualTo. Um teto frouxo passaria calado tanto se o
+        // Igualdade exata, nao isLessThanOrEqualTo: um teto frouxo passaria calado tanto se o
         // N+1 voltasse dentro do teto quanto se o custo mudasse por outro motivo.
         //
-        // Este numero era 52 -- 1 listagem + 1 espaco + 1 por cliente distinto -- e foi o teste
-        // que falhou quando o @EntityGraph entrou. Foi o teste falhando que documentou a
-        // correcao. As tres abordagens comparadas estao em CorrecaoNMaisUmIT, onde o caminho
-        // ingenuo continua medido em 52 para o "antes" nao virar folclore.
+        // Este numero era 52 antes do @EntityGraph, e foi o teste que falhou quando ele entrou.
+        // Depois da refatoracao hexagonal continua 1, e isso e informacao: o mapeamento para
+        // dominio toca espaco e cliente em TODAS as reservas, entao se o plano de fetch sumir o
+        // custo volta na hora. Antes o N+1 dependia de alguem tocar as associacoes; agora o
+        // mapeador sempre toca.
         assertThat(medicao.queries())
-                .as("guarda de regressao: se alguem tirar o plano de fetch do repositorio, "
-                        + "este numero volta a crescer com a cardinalidade dos clientes")
+                .as("guarda de regressao: sem o plano de fetch no adaptador, este numero volta a "
+                        + "crescer com a cardinalidade dos clientes")
                 .isEqualTo(1);
     }
 
@@ -131,20 +121,31 @@ class ContagemDeQueriesIT {
 
         assertThat(medicao.resultado().id()).isNotNull();
         assertThat(medicao.queries())
-                .as("baseline do caminho de escrita: espaco + cliente + verificacao + insert. "
-                        + "Fixado antes da V2 para que o custo de um lock pessimista, se ele "
-                        + "entrar, apareca como diferenca e nao como impressao.")
+                .as("espaco + cliente + verificacao + insert. O salvar() do adaptador rebusca "
+                        + "espaco e cliente, mas o persistence context ja os tem da mesma "
+                        + "transacao -- entao a reconciliacao nao custou query nenhuma, e este "
+                        + "numero nao mudou com a refatoracao.")
                 .isEqualTo(4);
     }
 
+    /**
+     * A patologia nº 2 do 1B invertida pela refatoração.
+     *
+     * <p>Antes, o repositório devolvia entidade JPA com proxies, e tocá-los fora da transação
+     * lançava {@code LazyInitializationException} — era o motivo estrutural para mapear dentro do
+     * serviço. Agora a porta devolve domínio já materializado, então isso não pode mais
+     * acontecer acima do adaptador.
+     *
+     * <p>A patologia não foi resolvida, foi <b>movida</b>: ela continua possível dentro do
+     * adaptador, e é o mapeador que a absorve — ao custo de tocar sempre as duas associações.
+     */
     @Test
-    void entidadeForaDaTransacaoNaoSerializa() {
-        List<Reserva> reservas = transacao.execute(status ->
-                reservaRepository.findByEspacoIdAndStatusOrderByInicioAsc(espacoId, StatusReserva.CONFIRMADA));
+    void dominioForaDaTransacaoContinuaUtilizavel() {
+        List<Reserva> lista = transacao.execute(status -> reservas.confirmadasDoEspaco(espacoId));
 
-        assertThatThrownBy(() -> reservas.getFirst().getCliente().getNome())
-                .as("com open-in-view: false o persistence context ja fechou -- e por isso que "
-                        + "o mapeamento para DTO tem que acontecer dentro do servico")
-                .isInstanceOf(LazyInitializationException.class);
+        assertThat(lista.getFirst().getCliente().getNome())
+                .as("fora da transacao, e sem erro: o mapeador ja materializou tudo")
+                .startsWith("Cliente ");
+        assertThat(lista.getFirst().getEspaco().getNome()).isEqualTo("Sala Azul");
     }
 }

@@ -5,10 +5,11 @@ import io.github.furlanettoeduardo.reservas.domain.Espaco;
 import io.github.furlanettoeduardo.reservas.domain.Periodo;
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
 import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
-import io.github.furlanettoeduardo.reservas.service.ReservaResponse;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.ReservaRepositorio;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ReservaJpa;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ReservaSpringData;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,24 +17,28 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Patologia n.1 do 1B: as tres correcoes do N+1, medidas contra o baseline de 52 queries.
+ * Patologia nº 1 do 1B: as três correções do N+1, medidas contra o baseline de 52 queries.
  *
- * <p>Nenhuma das tres e "a certa" em abstrato -- elas resolvem problemas de forma diferente, e
- * o teste existe para que a escolha seja feita com numero e nao com preferencia. A adotada em
- * producao e o {@code @EntityGraph}; o motivo esta no Javadoc do repositorio e o custo relativo
- * esta aqui.
+ * <p>Nenhuma das três é "a certa" em abstrato — elas resolvem o problema de formas diferentes, e
+ * o teste existe para que a escolha seja feita com número e não com preferência.
  *
- * <p>O caminho ingenuo continua vivo e medido, para que o "antes" nao vire folclore.
+ * <p><b>A refatoração hexagonal mudou o que dispara o N+1, e não o número.</b> Antes, o
+ * mapeamento para DTO tocava as associações e o N+1 era consequência de <i>alguém</i> tocá-las.
+ * Agora o mapeador do adaptador toca as duas <b>sempre</b>, para materializar o domínio. Ou
+ * seja: o plano de fetch deixou de ser otimização e passou a ser requisito — o custo virou
+ * inevitável em vez de acidental. Mesmo 52, por um motivo mais forte.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -43,7 +48,7 @@ class CorrecaoNMaisUmIT {
     private static final int QUANTIDADE_DE_RESERVAS = 50;
 
     private static final String JPQL_COM_JOIN_FETCH = """
-            select r from Reserva r
+            select r from ReservaJpa r
             join fetch r.espaco
             join fetch r.cliente
             where r.espaco.id = :espacoId and r.status = :status
@@ -51,62 +56,60 @@ class CorrecaoNMaisUmIT {
             """;
 
     @Autowired
-    private ReservaRepository reservaRepository;
+    private ReservaRepositorio reservas;
     @Autowired
-    private EspacoRepository espacoRepository;
+    private EspacoRepositorio espacos;
     @Autowired
-    private ClienteRepository clienteRepository;
+    private ClienteRepositorio clientes;
+    @Autowired
+    private ReservaSpringData springData;
     @Autowired
     private TransactionTemplate transacao;
     @Autowired
     private EntityManager em;
     @Autowired
     private EntityManagerFactory emf;
+    @Autowired
+    private JdbcTemplate jdbc;
 
     private Long espacoId;
     private ContadorDeQueries contador;
 
     @BeforeEach
     void semearClientesDistintos() {
+        LimpezaDeBase.limpar(jdbc);
         transacao.executeWithoutResult(status -> {
-            reservaRepository.deleteAll();
-            clienteRepository.deleteAll();
-            espacoRepository.deleteAll();
-        });
-        transacao.executeWithoutResult(status -> {
-            Espaco espaco = espacoRepository.save(
-                    new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
+            Espaco espaco = espacos.salvar(new Espaco("Sala Azul", 30, new BigDecimal("150.00")));
             espacoId = espaco.getId();
 
             Instant base = Instant.parse("2026-09-01T08:00:00Z");
             for (int i = 0; i < QUANTIDADE_DE_RESERVAS; i++) {
-                Cliente cliente = clienteRepository.save(
+                Cliente cliente = clientes.salvar(
                         new Cliente("Cliente " + i, "cliente%d@exemplo.com".formatted(i)));
-                reservaRepository.save(Reserva.nova(espaco, cliente, new Periodo(
+                reservas.salvar(Reserva.nova(espaco, cliente, new Periodo(
                         base.plusSeconds(i * 3600L), base.plusSeconds((i + 1) * 3600L))));
             }
         });
         contador = new ContadorDeQueries(emf);
     }
 
-    /** Mapeia dentro da transacao, como o servico faz -- senao os proxies morreriam antes. */
-    private ContadorDeQueries.Medicao<List<ReservaResponse>> medir(
-            java.util.function.Supplier<List<Reserva>> consulta) {
+    /** Mapeia para domínio dentro da transação, que é o que o adaptador faz em produção. */
+    private ContadorDeQueries.Medicao<List<Reserva>> medir(Supplier<List<ReservaJpa>> consulta) {
         return contador.medir(() -> transacao.execute(status ->
-                consulta.get().stream().map(ReservaResponse::de).toList()));
+                consulta.get().stream().map(ReservaJpa::paraDominio).toList()));
     }
 
-    private void conferirConteudo(List<ReservaResponse> resposta) {
+    private void conferirConteudo(List<Reserva> resposta) {
         assertThat(resposta).hasSize(QUANTIDADE_DE_RESERVAS);
         assertThat(resposta).allSatisfy(r -> {
-            assertThat(r.espacoNome()).isEqualTo("Sala Azul");
-            assertThat(r.clienteNome()).startsWith("Cliente ");
+            assertThat(r.getEspaco().getNome()).isEqualTo("Sala Azul");
+            assertThat(r.getCliente().getNome()).startsWith("Cliente ");
         });
     }
 
     @Test
     void semPlanoDeFetch_umaQueryPorAlvoDistinto() {
-        var medicao = medir(() -> reservaRepository
+        var medicao = medir(() -> springData
                 .findByEspacoIdAndStatusOrderByInicioAsc(espacoId, StatusReserva.CONFIRMADA));
 
         System.out.printf("%n[N+1] ingenuo            -> %d queries%n", medicao.queries());
@@ -121,11 +124,11 @@ class CorrecaoNMaisUmIT {
     @Test
     void comJoinFetchNaJpql_umaQuery() {
         var medicao = contador.medir(() -> transacao.execute(status ->
-                em.createQuery(JPQL_COM_JOIN_FETCH, Reserva.class)
+                em.createQuery(JPQL_COM_JOIN_FETCH, ReservaJpa.class)
                         .setParameter("espacoId", espacoId)
                         .setParameter("status", StatusReserva.CONFIRMADA)
                         .getResultList()
-                        .stream().map(ReservaResponse::de).toList()));
+                        .stream().map(ReservaJpa::paraDominio).toList()));
 
         System.out.printf("%n[N+1] join fetch (JPQL)  -> %d queries%n", medicao.queries());
         conferirConteudo(medicao.resultado());
@@ -135,7 +138,7 @@ class CorrecaoNMaisUmIT {
 
     @Test
     void comEntityGraph_umaQuery() {
-        var medicao = medir(() -> reservaRepository
+        var medicao = medir(() -> springData
                 .findComEspacoEClienteByEspacoIdAndStatusOrderByInicioAsc(
                         espacoId, StatusReserva.CONFIRMADA));
 
@@ -148,18 +151,18 @@ class CorrecaoNMaisUmIT {
     }
 
     /**
-     * Prova que as duas correcoes resolvem o mesmo problema por caminhos equivalentes -- e que
-     * a escolha entre elas e sobre organizacao de codigo, nao sobre custo.
+     * Prova que as duas correções resolvem o mesmo problema por caminhos equivalentes — e que a
+     * escolha entre elas é sobre organização de código, não sobre custo.
      */
     @Test
     void joinFetchEEntityGraphCustamOMesmo() {
         var comJpql = contador.medir(() -> transacao.execute(status ->
-                em.createQuery(JPQL_COM_JOIN_FETCH, Reserva.class)
+                em.createQuery(JPQL_COM_JOIN_FETCH, ReservaJpa.class)
                         .setParameter("espacoId", espacoId)
                         .setParameter("status", StatusReserva.CONFIRMADA)
                         .getResultList().size()));
 
-        var comGraph = contador.medir(() -> transacao.execute(status -> reservaRepository
+        var comGraph = contador.medir(() -> transacao.execute(status -> springData
                 .findComEspacoEClienteByEspacoIdAndStatusOrderByInicioAsc(
                         espacoId, StatusReserva.CONFIRMADA).size()));
 

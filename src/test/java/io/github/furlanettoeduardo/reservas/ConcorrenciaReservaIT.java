@@ -2,9 +2,10 @@ package io.github.furlanettoeduardo.reservas;
 
 import io.github.furlanettoeduardo.reservas.domain.Cliente;
 import io.github.furlanettoeduardo.reservas.domain.Espaco;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.ReservaRepositorio;
+import io.github.furlanettoeduardo.reservas.repository.ReservaRepositorioJpa;
 import io.github.furlanettoeduardo.reservas.service.ConflitoDeReservaException;
 import io.github.furlanettoeduardo.reservas.service.NovaReserva;
 import io.github.furlanettoeduardo.reservas.service.ReservaService;
@@ -40,48 +41,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Patologia n.6 do 1B: TOCTOU -- time of check to time of use -- e o efeito da V2 sobre ela.
- *
- * <p>{@code ReservaService.criar} verifica sobreposicao e depois grava. Sob READ_COMMITTED
- * (default do Postgres, conferido em teste proprio aqui) a segunda transacao nao enxerga a
- * linha ainda nao commitada da primeira, entao as duas verificam e as duas veem livre.
+ * Patologia nº 6 do 1B: TOCTOU, e o efeito da `V2` sobre ela.
  *
  * <pre>
- * antes da V2:  rejeitadas=0 | confirmadas=2 | pares sobrepostos=1   &lt;- estado invalido
+ * antes da V2:  rejeitadas=0 | confirmadas=2 | pares sobrepostos=1   &lt;- estado inválido
  * depois:       rejeitadas=1 | confirmadas=1 | pares sobrepostos=0
  * </pre>
  *
- * <p>A verificacao em Java continua perdendo a corrida, e nem tinha como nao perder. O que
- * mudou e que passou a existir algo segurando a linha. A regra virou caminho rapido com
- * mensagem boa; a EXCLUDE constraint da V2 e a garantia.
+ * <p>A verificação em Java continua perdendo a corrida, e nem tinha como não perder. O que mudou
+ * é que passou a existir algo segurando a linha: a `EXCLUDE` constraint. A regra virou caminho
+ * rápido com mensagem boa; a constraint é a garantia.
  *
- * <p><b>E o banco recusa de duas formas diferentes conforme o escalonamento</b> -- uma
- * forcavel, a outra nao:
+ * <p><b>O banco recusa de duas formas, e só uma é forçável.</b> Escalonadas dão
+ * {@code exclusion_violation}; simultâneas podem dar deadlock, porque cada INSERT grava a tupla e
+ * só então checa a exclusão — e essa janela é interna ao Postgres. Uma versão anterior assertava
+ * {@code CannotAcquireLockException} e passou três vezes local antes de quebrar no CI. Por isso o
+ * teste das simultâneas assere o <b>invariante</b> e apenas registra o mecanismo.
  *
- * <ul>
- *   <li><b>Escalonadas</b> (uma commita antes de a outra gravar): {@code exclusion_violation},
- *       {@link DataIntegrityViolationException}. Forcavel com um latch, e o teste forca.
- *   <li><b>Simultaneas</b>: pode dar deadlock ({@link CannotAcquireLockException}) ou
- *       {@code exclusion_violation}, e <b>nao da para escolher</b>. O deadlock exige que os
- *       dois INSERTs gravem a tupla antes de qualquer um dos dois checar a exclusao -- e essa
- *       janela e interna ao Postgres, invisivel e inalcancavel do cliente. Local deu deadlock
- *       tres vezes seguidas; o runner do CI, com menos nucleos, deu violacao.
- * </ul>
- *
- * <p>Por isso o teste das simultaneas assere o <b>invariante</b>, que e deterministico (uma
- * recusada, uma confirmada, zero pares), e apenas registra qual mecanismo ocorreu. Uma versao
- * anterior assertava {@code CannotAcquireLockException} e passou tres vezes local antes de
- * quebrar no CI: assercao sobre detalhe que o teste nao controla e flakiness com outro nome.
- * Os dois mecanismos sao tratados em {@code ApiExceptionHandler}, e la a cobertura e
- * deterministica porque a excecao vem de mock.
- *
- * <p>O cruzamento e forcado por gancho, nao por sorte. O gancho mora num proxy dinamico que
- * embrulha o repositorio, e nao num spy do Mockito: motivo medido, nao teorico --
- * {@code StubbedInvocationMatcher.answer()} e {@code synchronized}, entao as duas threads
- * serializam dentro do proprio spy e nunca chegam juntas a barreira. A primeira versao deste
- * teste registrou "rejeitadas=2, confirmadas=0", que e o Mockito segurando o lock, nao o
- * banco. Ferramenta de teste com estado compartilhado interno nao serve para testar
- * concorrencia. O codigo de producao continua sem gancho de teste.
+ * <p>O gancho que força o cruzamento agora embrulha a <b>porta</b>, e não o repositório Spring
+ * Data. É consequência da refatoração e uma melhora: a barreira passou a ficar exatamente na
+ * fronteira que o serviço usa, em vez de num detalhe do adaptador. Continua sendo
+ * {@code Proxy.newProxyInstance} e não spy do Mockito, porque
+ * {@code StubbedInvocationMatcher.answer()} é {@code synchronized} — com o spy as duas threads
+ * serializam dentro do próprio Mockito e nunca chegam juntas à barreira.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -92,19 +74,22 @@ class ConcorrenciaReservaIT {
     private static final Instant INICIO_B = Instant.parse("2026-09-01T14:00:00Z");
     private static final Instant FIM_B = Instant.parse("2026-09-01T16:00:00Z");
 
-    /** Roda depois da verificacao de sobreposicao e antes da gravacao, por thread. */
+    /** Roda depois da verificação de sobreposição e antes da gravação, por thread. */
     private static final ThreadLocal<Runnable> APOS_VERIFICAR = new ThreadLocal<>();
 
+    private static final Runnable NADA = () -> {
+    };
+
     @TestConfiguration
-    static class RepositorioComGancho {
+    static class PortaComGancho {
 
         @Bean
         @Primary
-        ReservaRepository reservaRepositoryComGancho(
-                @Qualifier("reservaRepository") ReservaRepository real) {
-            return (ReservaRepository) Proxy.newProxyInstance(
-                    ReservaRepository.class.getClassLoader(),
-                    new Class<?>[]{ReservaRepository.class},
+        ReservaRepositorio reservaRepositorioComGancho(
+                @Qualifier("reservaRepositorioJpa") ReservaRepositorio real) {
+            return (ReservaRepositorio) Proxy.newProxyInstance(
+                    ReservaRepositorio.class.getClassLoader(),
+                    new Class<?>[]{ReservaRepositorio.class},
                     (proxy, metodo, argumentos) -> {
                         Object resultado;
                         try {
@@ -122,13 +107,11 @@ class ConcorrenciaReservaIT {
     }
 
     @Autowired
-    private ReservaRepository reservaRepository;
-    @Autowired
     private ReservaService service;
     @Autowired
-    private EspacoRepository espacoRepository;
+    private EspacoRepositorio espacos;
     @Autowired
-    private ClienteRepository clienteRepository;
+    private ClienteRepositorio clientes;
     @Autowired
     private TransactionTemplate transacao;
     @Autowired
@@ -140,16 +123,12 @@ class ConcorrenciaReservaIT {
 
     @BeforeEach
     void prepararDadosCommitados() {
+        LimpezaDeBase.limpar(jdbc);
         transacao.executeWithoutResult(status -> {
-            reservaRepository.deleteAll();
-            clienteRepository.deleteAll();
-            espacoRepository.deleteAll();
-        });
-        transacao.executeWithoutResult(status -> {
-            espacoId = espacoRepository.save(
+            espacoId = espacos.salvar(
                     new Espaco("Sala Azul", 30, new BigDecimal("150.00"))).getId();
-            clienteUm = clienteRepository.save(new Cliente("Ana", "ana@exemplo.com")).getId();
-            clienteDois = clienteRepository.save(new Cliente("Bruno", "bruno@exemplo.com")).getId();
+            clienteUm = clientes.salvar(new Cliente("Ana", "ana@exemplo.com")).getId();
+            clienteDois = clientes.salvar(new Cliente("Bruno", "bruno@exemplo.com")).getId();
         });
     }
 
@@ -190,11 +169,6 @@ class ConcorrenciaReservaIT {
         assertThat(paresSobrepostosConfirmados()).isZero();
     }
 
-    /**
-     * As duas gravam ao mesmo tempo. O que o teste garante e o invariante; qual erro o
-     * Postgres escolhe depende de temporizacao interna e nao e assertado -- ver a nota na
-     * documentacao da classe.
-     */
     @Test
     void simultaneasSaoRecusadasPeloBanco() throws Exception {
         CyclicBarrier ambasVerificaram = new CyclicBarrier(2);
@@ -210,8 +184,9 @@ class ConcorrenciaReservaIT {
         assertThat(rejeicoes.getFirst())
                 .as("quem recusou foi o BANCO, nao a regra: as duas passaram na verificacao, "
                         + "entao um ConflitoDeReservaException aqui significaria que a corrida "
-                        + "nao aconteceu. Qual DataAccessException chega -- deadlock ou "
-                        + "violacao -- nao esta sob controle do teste e nao e assertado.")
+                        + "nao aconteceu. Qual DataAccessException chega -- deadlock "
+                        + "(CannotAcquireLockException) ou violacao -- nao esta sob controle do "
+                        + "teste e nao e assertado.")
                 .isInstanceOf(DataAccessException.class);
         assertThat(confirmadas()).isEqualTo(1);
         assertThat(paresSobrepostosConfirmados())
@@ -219,11 +194,6 @@ class ConcorrenciaReservaIT {
                 .isZero();
     }
 
-    /**
-     * As duas verificam, mas a primeira commita antes de a segunda gravar. Sem espera mutua
-     * nao ha deadlock: o Postgres recusa por violacao da constraint. E o caminho mais provavel
-     * em producao, e o unico que o handler previa antes.
-     */
     @Test
     void escalonadasProduzemViolacaoDaConstraint() throws Exception {
         CyclicBarrier ambasVerificaram = new CyclicBarrier(2);
@@ -248,9 +218,6 @@ class ConcorrenciaReservaIT {
         assertThat(confirmadas()).isEqualTo(1);
         assertThat(paresSobrepostosConfirmados()).isZero();
     }
-
-    private static final Runnable NADA = () -> {
-    };
 
     private void relatar(String cenario, List<Exception> rejeicoes) {
         System.out.printf("%n[TOCTOU %s] rejeitadas=%d (%s) | confirmadas=%d | pares=%d%n",

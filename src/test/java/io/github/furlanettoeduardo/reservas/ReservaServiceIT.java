@@ -2,7 +2,9 @@ package io.github.furlanettoeduardo.reservas;
 
 import io.github.furlanettoeduardo.reservas.domain.Cliente;
 import io.github.furlanettoeduardo.reservas.domain.Espaco;
-import io.github.furlanettoeduardo.reservas.domain.Reserva;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ClienteJpa;
+import io.github.furlanettoeduardo.reservas.repository.jpa.EspacoJpa;
+import io.github.furlanettoeduardo.reservas.repository.jpa.ReservaJpa;
 import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
 import io.github.furlanettoeduardo.reservas.service.ConflitoDeReservaException;
 import io.github.furlanettoeduardo.reservas.service.NovaReserva;
@@ -50,8 +52,9 @@ class ReservaServiceIT {
 
     @BeforeEach
     void preparar() {
-        espacoId = em.persist(new Espaco("Sala Azul", 30, new BigDecimal("150.00"))).getId();
-        clienteId = em.persist(new Cliente("Ana", "ana@exemplo.com")).getId();
+        espacoId = em.persist(
+                EspacoJpa.de(new Espaco("Sala Azul", 30, new BigDecimal("150.00")))).getId();
+        clienteId = em.persist(ClienteJpa.de(new Cliente("Ana", "ana@exemplo.com"))).getId();
         em.flush();
     }
 
@@ -112,7 +115,7 @@ class ReservaServiceIT {
         em.flush();
         em.clear();
 
-        assertThat(em.find(Reserva.class, reserva.id()).getStatus())
+        assertThat(em.find(ReservaJpa.class, reserva.id()).paraDominio().getStatus())
                 .as("dirty checking: o servico so mudou o objeto, o UPDATE saiu no flush")
                 .isEqualTo(StatusReserva.CANCELADA);
     }
