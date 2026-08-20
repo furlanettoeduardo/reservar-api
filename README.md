@@ -280,6 +280,29 @@ quando a exceção atravessa a fronteira transacional depois de algo já ter sid
 Os métodos deliberadamente quebrados vivem em `PatologiasTransacionais`, em código de teste —
 produção não carrega isso.
 
+## `equals`/`hashCode` de entidade JPA: as duas receitas erradas
+
+As entidades usam `instanceof` no `equals` e uma constante de classe no `hashCode`. As duas
+alternativas comuns falham, e falham de formas diferentes — ambas medidas em
+`ContratoDeHashCodeTests` e `ProxyEmHashSetIT`:
+
+| Receita | O que quebra |
+|---|---|
+| `hashCode` esquecido | **correção** — `contains` devolve `false`, sem nem chamar `equals` |
+| `hashCode() = getClass().hashCode()` | **correção com proxy** — proxy e entidade vão para buckets diferentes |
+| `hashCode` derivado do id | **correção no `persist`** — o id muda de `null` para um valor e a entidade some do `Set` |
+| constante de classe (adotada) | **desempenho** — 2049 comparações por busca com n=4096 |
+
+O preço não é acidente: identidade que muda ao longo do ciclo de vida do objeto é incompatível
+com um `hashCode` estável e disperso ao mesmo tempo. A constante escolhe estabilidade.
+
+E há um custo escondido medido: `contains(proxy)` dispara um `SELECT`, porque o `HashSet`
+precisa do `hashCode` e o proxy só responde depois de inicializar. Coleção de entidades
+inicializa proxies em silêncio.
+
+Conclusão prática: coleção de **ids**, não de entidades. Detalhes em
+[`docs/jpa-patologias.md`](docs/jpa-patologias.md).
+
 ## Patologias medidas
 
 O documento [`docs/jpa-patologias.md`](docs/jpa-patologias.md) reúne cada patologia de JPA,

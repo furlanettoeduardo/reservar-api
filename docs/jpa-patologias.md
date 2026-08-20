@@ -33,7 +33,7 @@ mesma origem.
 | 5 | Checked exception sem rollback | provada e corrigida | `TransacaoIT` |
 | 6 | TOCTOU na verificação de sobreposição | provada e fechada no banco | `ConcorrenciaReservaIT` + `V2` |
 | — | Ordem de flush do Hibernate | descoberta acidental | `ContagemDeQueriesIT` (comentário) |
-| 7 | Entidade em `HashSet` com proxy | pendente | — |
+| 7 | Entidade em `HashSet` com proxy | medida | `ContratoDeHashCodeTests`, `ProxyEmHashSetIT` |
 | 9 | Índice e plano de execução | medida — B-tree **não** é redundante | `PlanoDeExecucaoIT` |
 | 10 | Paginação com `JOIN FETCH` de coleção | **não se aplica** | não há coleção — [ADR 0001](adr/0001-relacionamento-unidirecional.md) |
 
@@ -294,6 +294,123 @@ gravação mora num `Proxy.newProxyInstance` sobre a interface do repositório, 
 > Vale para qualquer spy, proxy de logging ou coletor de métricas inserido num teste de corrida.
 > E a variante silenciosa é pior: um mock que serializa sem dar timeout transforma teste de
 > corrida em teste sequencial que passa.
+
+---
+
+## 7. Entidade em `HashSet` — os dois extremos do contrato de `hashCode`
+
+### As duas pontas não falham do mesmo jeito
+
+Isto costuma ser dito errado, inclusive por mim antes de medir:
+
+| Receita | Resposta | Custo |
+|---|---|---|
+| `equals` sobrescrito, `hashCode` esquecido (hash de identidade) | **errada** — `contains` devolve `false` | nenhum: 0 comparações |
+| `hashCode` constante | certa | **2049 comparações por busca** com n=4096 |
+| `hashCode` derivado do estado | certa | 1 comparação, em qualquer n |
+
+Hash disperso demais quebra **correção**: objetos iguais por `equals` caem em buckets
+diferentes, o bucket consultado está vazio, e a busca nem chega a comparar. Resposta errada,
+rápido.
+
+Hash constante quebra **desempenho**: encontra sempre, varrendo a estrutura de colisão. Resposta
+certa, devagar.
+
+Medido somando as N buscas num conjunto de N, com contador de chamadas a `equals`:
+
+```
+4096 buscas em conjunto de 4096:
+  hash de valor    ->     4.096 comparações (1,0 por busca)
+  hash constante   -> 8.394.751 comparações (2049,5 por busca, 2049x mais)
+```
+
+8,4 milhões é ordem de N²/2 — N buscas em O(n). Somar todas as buscas em vez de cronometrar
+uma foi o que tornou a medida estável, e a razão está na nota de método abaixo.
+
+### A árvore rubro-negra, e uma armadilha de asserção que quase passou
+
+Com mais de 8 colisões no mesmo bucket, o `HashMap` converte a lista em árvore rubro-negra.
+Ordenar a árvore exige chaves `Comparable`, e entidade não é — então o `HashMap` desempata por
+`System.identityHashCode`, e a forma da árvore depende de onde os objetos caíram na heap.
+
+Cinco conjuntos do mesmo tamanho, buscando um elemento cada:
+
+```
+n=512  -> [164, 294, 286]
+n=4096 -> [1486, 3974, 621]   e depois [888, 2874, 2327, 3611, 198]
+```
+
+**As faixas se sobrepõem**: 621 em n=4096 é menor que 294 em n=512. A primeira versão do teste
+assertava "o maior n custa mais" e passou — por sorte. Terceira vez que a mesma armadilha
+apareceu nesta trilha, e a primeira em que foi vista antes de o CI reclamar: bastou olhar os
+números em vez do checkmark verde.
+
+Detalhe que corrigiu a explicação: os cinco valores **repetem** entre execuções nesta JVM,
+porque o hash de identidade do HotSpot vem de um PRNG com semente determinística e a ordem de
+alocação é a mesma. Reprodutível aqui não é o mesmo que controlado pelo teste — outra JVM, outro
+GC ou outra ordem de alocação muda os números.
+
+### O proxy, e por que a receita mais divulgada quebra
+
+| | valor |
+|---|---|
+| `proxy.getClass()` | subclasse gerada, **≠** `Espaco.class` |
+| `proxy instanceof Espaco` | `true` |
+| `proxy.getClass().hashCode()` | **≠** `Espaco.class.hashCode()` |
+| `proxy.hashCode()` (constante de classe) | **=** `entidade.hashCode()` |
+
+A receita que circula mais — `hashCode()` devolvendo `getClass().hashCode()` — colocaria proxy e
+entidade em **buckets diferentes**. `contains()` devolveria `false` com um `equals` perfeitamente
+correto, porque o `equals` nunca chega a ser chamado. É a mesma falha do hash de identidade,
+disfarçada de boa prática.
+
+Por isso as entidades deste repositório usam `instanceof` no `equals` (a subclasse *é* um
+`Espaco`) e uma constante de classe no `hashCode`.
+
+### O custo escondido: `contains(proxy)` dispara um `SELECT`
+
+Achado que não estava no plano do experimento:
+
+```
+[proxy] contains(proxy) -> 1 query, inicializado=true
+```
+
+`HashSet` precisa de `hashCode` para calcular o bucket, e o proxy só responde `hashCode` depois
+de inicializar. **Uma coleção de entidades inicializa proxies em silêncio** — é o N+1 da
+patologia nº 1 entrando por outra porta, e não aparece em nenhuma leitura do código, só na
+contagem de queries.
+
+### Por que o `hashCode` não pode derivar do id
+
+Dentro de uma transação, o id vai de `null` para um valor quando o `INSERT` sai. Hash derivado do
+id mudaria de bucket nesse instante, e a entidade **sumiria de qualquer conjunto em que já
+estivesse** — encontrável por iteração, invisível por `contains`. Há teste: entidade adicionada
+ao `HashSet` antes do `save` continua sendo encontrada depois.
+
+É esse requisito que força a constante, e a constante é o que custa as 2049 comparações. **O
+preço não é acidente, é consequência**: identidade que muda ao longo do ciclo de vida do objeto
+é incompatível com `hashCode` estável e disperso ao mesmo tempo.
+
+### Consequência prática
+
+Não colocar entidade JPA em `HashSet` ou `HashMap` quando o conjunto puder crescer. As alternativas,
+em ordem de preferência:
+
+1. Coleção de **ids** (`Set<Long>`) — hash de valor, O(1), sem proxy para inicializar.
+2. Value object extraído (como `Periodo`), quando o que interessa é o estado e não a identidade.
+3. `List` com busca linear explícita, se o conjunto é pequeno — pelo menos o custo fica visível
+   no código em vez de escondido atrás de um `Set`.
+
+Neste repositório o caso não aparece em produção, porque não há coleção de entidades em lugar
+nenhum — consequência do [ADR 0001](adr/0001-relacionamento-unidirecional.md), de novo.
+
+### Nota de método
+
+A asserção final compara **ordens de grandeza** e não valores: 1 comparação por busca contra
+centenas, com a soma das N buscas em vez de uma amostra. O crescimento com n fica registrado no
+log, não em asserção, porque depende da forma de uma árvore que o teste não controla.
+
+Terceira aplicação da regra 3, e a primeira preventiva.
 
 ---
 
