@@ -1,7 +1,7 @@
 package io.github.furlanettoeduardo.reservas.service;
 
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,21 +20,21 @@ import java.util.List;
 @Service
 public class CatalogoService {
 
-    private final EspacoRepository espacos;
-    private final ClienteRepository clientes;
+    private final EspacoRepositorio espacos;
+    private final ClienteRepositorio clientes;
 
-    public CatalogoService(EspacoRepository espacos, ClienteRepository clientes) {
+    public CatalogoService(EspacoRepositorio espacos, ClienteRepositorio clientes) {
         this.espacos = espacos;
         this.clientes = clientes;
     }
 
     @Transactional(readOnly = true)
     public List<EspacoResponse> listarEspacos() {
-        return espacos.findAll().stream().map(EspacoResponse::de).toList();
+        return espacos.todos().stream().map(EspacoResponse::de).toList();
     }
 
     @Transactional(readOnly = true)
     public List<ClienteResponse> listarClientes() {
-        return clientes.findAll().stream().map(ClienteResponse::de).toList();
+        return clientes.todos().stream().map(ClienteResponse::de).toList();
     }
 }

@@ -5,9 +5,9 @@ import io.github.furlanettoeduardo.reservas.domain.Espaco;
 import io.github.furlanettoeduardo.reservas.domain.Periodo;
 import io.github.furlanettoeduardo.reservas.domain.Reserva;
 import io.github.furlanettoeduardo.reservas.domain.StatusReserva;
-import io.github.furlanettoeduardo.reservas.repository.ClienteRepository;
-import io.github.furlanettoeduardo.reservas.repository.EspacoRepository;
-import io.github.furlanettoeduardo.reservas.repository.ReservaRepository;
+import io.github.furlanettoeduardo.reservas.domain.port.ClienteRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.EspacoRepositorio;
+import io.github.furlanettoeduardo.reservas.domain.port.ReservaRepositorio;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,16 +22,16 @@ import java.util.List;
 @Service
 public class ReservaService {
 
-    private final ReservaRepository reservaRepository;
-    private final EspacoRepository espacoRepository;
-    private final ClienteRepository clienteRepository;
+    private final ReservaRepositorio reservas;
+    private final EspacoRepositorio espacos;
+    private final ClienteRepositorio clientes;
 
-    public ReservaService(ReservaRepository reservaRepository,
-                          EspacoRepository espacoRepository,
-                          ClienteRepository clienteRepository) {
-        this.reservaRepository = reservaRepository;
-        this.espacoRepository = espacoRepository;
-        this.clienteRepository = clienteRepository;
+    public ReservaService(ReservaRepositorio reservas,
+                         EspacoRepositorio espacos,
+                         ClienteRepositorio clientes) {
+        this.reservas = reservas;
+        this.espacos = espacos;
+        this.clientes = clientes;
     }
 
     /**
@@ -58,23 +58,23 @@ public class ReservaService {
     public ReservaResponse criar(NovaReserva comando) {
         Periodo periodo = new Periodo(comando.inicio(), comando.fim());
 
-        Espaco espaco = espacoRepository.findById(comando.espacoId())
+        Espaco espaco = espacos.porId(comando.espacoId())
                 .orElseThrow(() -> new RecursoNaoEncontradoException("espaco", comando.espacoId()));
-        Cliente cliente = clienteRepository.findById(comando.clienteId())
+        Cliente cliente = clientes.porId(comando.clienteId())
                 .orElseThrow(() -> new RecursoNaoEncontradoException("cliente", comando.clienteId()));
 
-        if (reservaRepository.existeSobreposicao(
+        if (reservas.existeSobreposicao(
                 espaco.getId(), StatusReserva.CONFIRMADA, periodo.inicio(), periodo.fim())) {
             throw new ConflitoDeReservaException(espaco.getId(), periodo);
         }
 
-        return ReservaResponse.de(reservaRepository.save(Reserva.nova(espaco, cliente, periodo)));
+        return ReservaResponse.de(reservas.salvar(Reserva.nova(espaco, cliente, periodo)));
     }
 
     /** Sem save(): dentro da transacao o dirty checking detecta a mudanca e emite o UPDATE. */
     @Transactional
     public void cancelar(Long reservaId) {
-        Reserva reserva = reservaRepository.findById(reservaId)
+        Reserva reserva = reservas.porId(reservaId)
                 .orElseThrow(() -> new RecursoNaoEncontradoException("reserva", reservaId));
         reserva.cancelar();
     }
@@ -89,8 +89,7 @@ public class ReservaService {
      */
     @Transactional(readOnly = true)
     public List<ReservaResponse> listarConfirmadasDoEspaco(Long espacoId) {
-        return reservaRepository.findComEspacoEClienteByEspacoIdAndStatusOrderByInicioAsc(
-                        espacoId, StatusReserva.CONFIRMADA)
+        return reservas.confirmadasDoEspaco(espacoId)
                 .stream()
                 .map(ReservaResponse::de)
                 .toList();

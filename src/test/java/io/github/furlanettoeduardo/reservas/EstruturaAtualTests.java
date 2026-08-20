@@ -77,8 +77,16 @@ class EstruturaAtualTests {
                 .check(CLASSES);
     }
 
+    /**
+     * Historico desta assercao, que e o registro da refatoracao acontecendo:
+     *
+     * <pre>
+     * 1A a 1C:  raiz, domain, repository, service, web, dev
+     * portas:   + domain.port          &lt;- inversao de dependencia
+     * </pre>
+     */
     @Test
-    void hoje_osPacotesSaoOsCincoConhecidos() {
+    void hoje_osPacotesConhecidos() {
         Set<String> pacotes = CLASSES.stream()
                 .map(JavaClass::getPackageName)
                 .filter(p -> p.startsWith(RAIZ))
@@ -88,7 +96,8 @@ class EstruturaAtualTests {
         assertThat(pacotes)
                 .as("LINHA DE BASE da estrutura de pastas, para o diff da refatoracao ser "
                         + "comparavel a algo escrito antes dela")
-                .containsExactlyInAnyOrder("(raiz)", "domain", "repository", "service", "web", "dev");
+                .containsExactlyInAnyOrder("(raiz)", "domain", "domain.port", "repository",
+                        "service", "web", "dev");
     }
 
     private static boolean dependeDeJpa(JavaClass classe) {

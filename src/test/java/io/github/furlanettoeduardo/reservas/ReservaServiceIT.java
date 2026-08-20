@@ -8,6 +8,9 @@ import io.github.furlanettoeduardo.reservas.service.ConflitoDeReservaException;
 import io.github.furlanettoeduardo.reservas.service.NovaReserva;
 import io.github.furlanettoeduardo.reservas.service.ReservaResponse;
 import io.github.furlanettoeduardo.reservas.service.RecursoNaoEncontradoException;
+import io.github.furlanettoeduardo.reservas.repository.ClienteRepositorioJpa;
+import io.github.furlanettoeduardo.reservas.repository.EspacoRepositorioJpa;
+import io.github.furlanettoeduardo.reservas.repository.ReservaRepositorioJpa;
 import io.github.furlanettoeduardo.reservas.service.ReservaService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,7 +28,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({TestcontainersConfiguration.class, ReservaService.class})
+// Os adaptadores das portas entram explicitamente: @DataJpaTest escaneia repositorios Spring
+// Data, e nao beans @Repository comuns. E o primeiro custo concreto da inversao -- a fatia de
+// teste passou a precisar saber quem implementa a porta.
+@Import({TestcontainersConfiguration.class, ReservaService.class,
+        ReservaRepositorioJpa.class, EspacoRepositorioJpa.class, ClienteRepositorioJpa.class})
 class ReservaServiceIT {
 
     @Autowired
