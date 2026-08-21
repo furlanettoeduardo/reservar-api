@@ -120,10 +120,34 @@ Isso responde parcialmente a reclamação de "cinco lugares para tocar ao adicio
 0004 — o compilador passaria a cobrar dois deles. **É o argumento mais forte a favor da adoção, e
 ele não venceu os 142 contra 36.**
 
-Mitigação escolhida: um teste que compara os campos do domínio com os que o mapeamento copia,
-usando reflexão. Cobre a mesma falha, custa uma classe de teste em vez de uma dependência e 94
-linhas de acessores públicos, e — diferente da política do MapStruct — é um teste, então não pode
-ser desligado por uma palavra numa anotação. Fica registrado como pendência, não como feito.
+Mitigação **implementada**: `MapeamentoCompletoTests` monta um objeto de domínio com todos os
+campos preenchidos, faz o round-trip pelo mapeamento e compara campo a campo por reflexão. Campo
+novo não copiado volta `null` e o teste falha.
+
+Compara por reflexão e não por `equals` de propósito: o `equals` do domínio omite `criadoEm`, então
+usá-lo esconderia exatamente a classe de falha que o teste existe para pegar.
+
+A lista de campos deliberadamente não carregados é o equivalente ao `@Mapping(ignore = true)` — com
+duas diferenças. Cada entrada tem o **motivo** escrito ao lado, e um teste separado assere o
+tamanho da lista, então crescê-la exige tocar nela conscientemente.
+
+**Dente verificado**, removendo uma linha de cópia por vez do `aplicar`:
+
+| campo esquecido | resultado |
+|---|---|
+| `status` | 2 falhas, mensagem nomeando o campo |
+| `valorTotal` | 2 falhas, mensagem nomeando o campo |
+| `inicio` | 2 erros — `Periodo` recusa antes: `NullPointerException: inicio e obrigatorio` |
+| `fim` | 2 erros — idem |
+
+Os dois últimos revelam que há **duas guardas, e a mais estrita dispara primeiro**: o value object
+`Periodo` se recusa a existir inválido, então a falha aparece na construção em vez de como campo
+nulo. A mensagem é menos legível que a da asserção, mas o build para do mesmo jeito.
+
+E por que isto é preferível à política do MapStruct, o que só ficou claro medindo: a proteção do
+MapStruct é uma palavra numa anotação, e trocar `ERROR` por `WARN` desliga a verificação nas duas
+direções de uma vez, sem que nada teste essa palavra. Um teste não tem ponto único de desativação
+— apagá-lo é apagar um arquivo, e isso aparece no diff.
 
 ## Quando isto se inverteria
 
