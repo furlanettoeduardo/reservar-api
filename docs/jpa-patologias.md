@@ -516,6 +516,25 @@ fixa, então **os dois caminhos nunca se encontravam**. Cada camada isolada esta
 inconsistência vivia na costura — a limitação de teste de fatia, e o argumento a favor de ter
 algum caminho ponta a ponta. No caso, foi manual.
 
+### A nº 8 quebrando o contrato da nº 7
+
+Onde as duas se encontram, e só apareceu quando o domínio ganhou `hashCode` derivado do estado na
+refatoração hexagonal:
+
+```java
+// Espaco.hashCode()
+return Objects.hash(id, nome, capacidade,
+        precoHora == null ? null : precoHora.stripTrailingZeros());
+```
+
+O `equals` compara preço com `compareTo`, então ignora escala — dois espaços com `150.00` e
+`150.0000` são iguais. Mas `BigDecimal.hashCode` **distingue** escala. Sem o
+`stripTrailingZeros()`, o mesmo espaço calculado em memória e lido do banco cairia em buckets
+diferentes: dois objetos `equals` com hashes diferentes, que é a violação de contrato da patologia
+nº 7 — provocada pela nº 8.
+
+Não é hipótese: `ProxyEmHashSetIT.oHashDoDominioIgnoraEscalaDoPreco` assere os dois lados.
+
 ### A correção e o teste que a guarda
 
 A normalização mora no DTO, não na entidade: a entidade deve espelhar a coluna, a fronteira do

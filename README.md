@@ -479,6 +479,7 @@ correções falham: mover a falha para outra camada e mover a falha para outro a
 - [ADR 0002 — JPQL em vez de query derivation](docs/adr/0002-jpql-em-vez-de-query-derivation.md)
 - [ADR 0003 — `ListCrudRepository` em vez de `JpaRepository`](docs/adr/0003-listcrudrepository-em-vez-de-jparepository.md)
 - [ADR 0004 — Portas e adaptadores, com o custo medido](docs/adr/0004-arquitetura-hexagonal.md)
+- [ADR 0005 — **Não** adotar MapStruct: 142 linhas para substituir 36](docs/adr/0005-nao-adotar-mapstruct.md)
 
 ## Stack
 
